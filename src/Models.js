@@ -4,6 +4,9 @@ import { FBXLoader } from 'https://unpkg.com/three@0.160.0/examples/jsm/loaders/
 // 食物模型：与 models/food 下的 .fbx 一一对应
 export const FOOD_MODELS = ['apple', 'banana', 'orange'];
 
+// 材料模型：与 models/material 下的 .fbx 一一对应
+export const MATERIAL_MODELS = ['plastic_sheet', 'rope', 'wood_plank'];
+
 // 归一化：缩放到统一尺寸，并把几何中心移到原点，方便随浪倾斜/旋转
 function normalize(obj) {
   const box = new THREE.Box3().setFromObject(obj);
@@ -34,14 +37,13 @@ function fallbackMesh() {
   return m;
 }
 
-// 预加载所有食物模型（每个只加载一次，之后 spawn 时 clone）。
-// 单个模型加载失败则用占位盒兜底，保证游戏可正常运行。
-export async function loadFoodModels() {
+// 按文件名加载 ./models/<folder>/<name>.fbx，返回 { name: 归一化后的模板 }
+async function loadModels(names, folder) {
   const loader = new FBXLoader();
   const out = {};
-  await Promise.all(FOOD_MODELS.map((name) => new Promise((resolve) => {
+  await Promise.all(names.map((name) => new Promise((resolve) => {
     loader.load(
-      `./models/food/${name}.fbx`,
+      `./models/${folder}/${name}.fbx`,
       (obj) => {
         normalize(obj);
         out[name] = hasMeshes(obj) ? obj : fallbackMesh();
@@ -49,11 +51,21 @@ export async function loadFoodModels() {
       },
       undefined,
       () => {
-        console.warn('食物模型加载失败，使用占位盒:', name);
+        console.warn('模型加载失败，使用占位盒:', name);
         out[name] = fallbackMesh();
         resolve();
       }
     );
   })));
   return out;
+}
+
+// 预加载食物模型（每个只加载一次，之后 spawn 时 clone）
+export async function loadFoodModels() {
+  return loadModels(FOOD_MODELS, 'food');
+}
+
+// 预加载材料模型（木头/塑料/绳索/木材等漂浮物的模型）
+export async function loadMaterialModels() {
+  return loadModels(MATERIAL_MODELS, 'material');
 }

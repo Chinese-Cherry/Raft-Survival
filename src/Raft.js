@@ -35,7 +35,7 @@ export class Raft {
 
   addTile(gx, gz) {
     if (this.hasTile(gx, gz)) return false;
-    const geo = new THREE.BoxGeometry(TILE * 1.01, 0.3, TILE * 1.01);
+    const geo = new THREE.BoxGeometry(TILE * 0.99, 0.3, TILE * 0.99);
     const mat = new THREE.MeshStandardMaterial({ color: 0x8a5a2b, roughness: 0.9 });
     const m = new THREE.Mesh(geo, mat);
     const [wx, wz] = this.gridToWorld(gx, gz);

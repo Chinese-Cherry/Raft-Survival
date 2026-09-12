@@ -2,9 +2,9 @@
 // category: 'resource' 原材料（显示在快捷栏） / 'tool' 道具（显示在背包）
 export const ITEMS = {
   // —— 原材料 ——
-  wood:    { id: 'wood',    name: '木头', icon: '🪵', category: 'resource' },
   plastic: { id: 'plastic', name: '塑料', icon: '🧴', category: 'resource' },
   rope:    { id: 'rope',    name: '绳索', icon: '🪢', category: 'resource' },
+  lumber:  { id: 'lumber',  name: '木材', icon: '🟫', category: 'resource' },
   apple:   { id: 'apple',   name: '苹果', icon: '🍎', category: 'resource' },
   banana:  { id: 'banana',  name: '香蕉', icon: '🍌', category: 'resource' },
   orange:  { id: 'orange',  name: '橙子', icon: '🍊', category: 'resource' },

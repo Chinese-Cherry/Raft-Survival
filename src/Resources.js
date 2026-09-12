@@ -2,9 +2,9 @@ import * as THREE from 'three';
 import { CFG } from './let.js';
 
 export const TYPES = {
-  wood: { color: 0x8a5a2b, label: '木头', shape: 'box', radius: 0.55 },
-  plastic: { color: 0x4fa3d1, label: '塑料', shape: 'box', radius: 0.55 },
-  rope: { color: 0xc9b079, label: '绳索', shape: 'cyl', radius: 0.40 },
+  plastic: { color: 0x4fa3d1, label: '塑料', shape: 'model', radius: 0.55, model: 'plastic_sheet' },
+  rope: { color: 0xc9b079, label: '绳索', shape: 'model', radius: 0.40, model: 'rope' },
+  lumber: { color: 0x6f4a22, label: '木材', shape: 'model', radius: 0.55, model: 'wood_plank' },
   apple: { color: 0xd14f6a, label: '苹果', shape: 'model', radius: 0.45, model: 'apple' },
   banana: { color: 0xe6c84f, label: '香蕉', shape: 'model', radius: 0.45, model: 'banana' },
   orange: { color: 0xe08a2b, label: '橙子', shape: 'model', radius: 0.45, model: 'orange' },

@@ -184,7 +184,7 @@ export class Game {
     pos.setXYZ(1, this.bobber.position.x, this.bobber.position.y, this.bobber.position.z);
     pos.needsUpdate = true;
     if (this.fishing.timer >= this.fishing.duration) {
-      const lootPool = ['apple', 'banana', 'orange', 'wood', 'plastic', 'rope'];
+      const lootPool = ['apple', 'banana', 'orange', 'plastic', 'rope', 'lumber'];
       const loot = lootPool[Math.floor(Math.random() * lootPool.length)];
       this.inventory.add(loot, 1);
       this.ui.refreshCounts();
@@ -274,8 +274,8 @@ export class Game {
     // 找到玩家所在格相邻的空格用于扩建
     const cell = this.raft.nearestEmptyNeighbor(this.player.pos.x, this.player.pos.z);
     if (!cell) return;
-    if (!this.inventory.consume('wood', 2)) {
-      this.ui.setPrompt('需要 2 木头来扩建木筏');
+    if (!this.inventory.consume('lumber', 2)) {
+      this.ui.setPrompt('需要 2木材来扩建木筏');
       return;
     }
     this.raft.addTile(cell[0], cell[1]);
@@ -336,7 +336,7 @@ export class Game {
 
     // 建造预览：若玩家所在格有相邻空格且买得起，显示幽灵格
     const cell = this.raft.nearestEmptyNeighbor(this.player.pos.x, this.player.pos.z);
-    if (cell && this.inventory.has('wood', 2)) {
+    if (cell && this.inventory.has('lumber', 2)) {
       const [wx, wz] = this.raft.gridToWorld(cell[0], cell[1]);
       this.ghost.position.set(wx, 0, wz);
       this.ghost.visible = true;
@@ -354,7 +354,7 @@ export class Game {
     } else {
       const near = this.resources.nearest(this.player.pos);
       if (near) prompt = `按 E 拾取 ${this._label(near.type)}`;
-      else if (this.ghost.visible) prompt = '左键 扩建木筏 (2 木头)';
+      else if (this.ghost.visible) prompt = '左键 扩建木筏 (2 木材)';
     }
     this.ui.setPrompt(prompt);
 
