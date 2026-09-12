@@ -1,0 +1,19 @@
+# 操作系统生成的文件
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# 编辑器 / IDE
+.vscode/
+.idea/
+
+# 项目本地数据（非源码，不纳入版本控制）
+.codebuddy/
+.codebuddycn/
+
+# 依赖 / 构建产物（本项目为纯前端，经 CDN 加载 three.js，无 node_modules）
+node_modules/
+
+# 日志
+*.log

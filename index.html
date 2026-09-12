@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Raft Survival - 3D 木筏求生</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0e1a; font-family: "Segoe UI", system-ui, sans-serif; }
+    #app { width: 100%; height: 100%; display: block; }
+    #hud {
+      position: fixed; inset: 0; pointer-events: none; color: #fff;
+      text-shadow: 0 1px 3px rgba(0,0,0,.7);
+    }
+    #crosshair {
+      position: absolute; top: 50%; left: 50%; width: 6px; height: 6px;
+      margin: -3px 0 0 -3px; background: #fff; border-radius: 50%; opacity: .85;
+    }
+    #equipped {
+      position: absolute; bottom: 16px; left: 50%; transform: translateX(-50%);
+      background: rgba(0,0,0,.45); padding: 6px 16px; border-radius: 20px;
+      font-size: 14px; display: none;
+    }
+    #equipped .key { opacity: .6; font-size: 11px; margin-right: 6px; }
+    #inventory {
+      position: absolute; left: 16px; bottom: 16px; display: flex; gap: 10px;
+      background: rgba(0,0,0,.35); padding: 10px 12px; border-radius: 10px; font-size: 14px;
+    }
+    .slot { min-width: 64px; text-align: center; }
+    .slot .name { opacity: .7; font-size: 11px; }
+    .slot .count { font-size: 18px; font-weight: 700; }
+    #prompt {
+      position: absolute; top: 58%; left: 50%; transform: translateX(-50%);
+      background: rgba(0,0,0,.5); padding: 6px 14px; border-radius: 8px; font-size: 15px; display: none;
+    }
+    #crafting {
+      position: absolute; right: 16px; top: 16px; width: 240px;
+      background: rgba(0,0,0,.4); padding: 12px; border-radius: 10px; display: none; pointer-events: auto;
+    }
+    #crafting h3 { font-size: 14px; margin-bottom: 8px; opacity: .85; }
+    .recipe {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 6px 8px; margin-bottom: 6px; background: rgba(255,255,255,.08);
+      border-radius: 6px; font-size: 13px; cursor: pointer;
+    }
+    .recipe:hover { background: rgba(255,255,255,.16); }
+    .recipe.locked { opacity: .4; cursor: not-allowed; }
+    #help {
+      position: absolute; left: 16px; top: 16px; font-size: 12px; line-height: 1.6;
+      background: rgba(0,0,0,.35); padding: 10px 12px; border-radius: 10px; opacity: .9;
+    }
+    #backpack {
+      position: absolute; right: 16px; bottom: 16px; width: 300px;
+      background: rgba(0,0,0,.45); padding: 14px; border-radius: 10px; display: none;
+    }
+    #backpack h3 { font-size: 15px; margin-bottom: 10px; }
+    #backpack-grid {
+      display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px;
+    }
+    .cell {
+      aspect-ratio: 1; background: rgba(255,255,255,.08); border-radius: 8px;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      position: relative; font-size: 11px;
+    }
+    .cell .ico { font-size: 22px; }
+    .cell .cnt {
+      position: absolute; right: 4px; bottom: 2px; font-size: 12px; font-weight: 700;
+    }
+    .cell .nm { opacity: .7; margin-top: 2px; }
+    .empty-hint { opacity: .5; font-size: 12px; grid-column: 1 / -1; text-align: center; padding: 12px 0; }
+    #overlay {
+      position: fixed; inset: 0; background: rgba(5,10,25,.85); color: #fff;
+      display: flex; align-items: center; justify-content: center; flex-direction: column;
+      cursor: pointer; z-index: 10;
+    }
+    #overlay h1 { font-size: 40px; margin-bottom: 12px; }
+    #overlay p { opacity: .8; font-size: 15px; }
+  </style>
+</head>
+<body>
+  <canvas id="app"></canvas>
+
+  <div id="hud">
+    <div id="crosshair"></div>
+    <div id="equipped"></div>
+    <div id="help">
+      WASD 移动 · 鼠标 视角 · Shift 疾跑<br/>
+      E 拾取/互动 · 左键 建造/放置<br/>
+      C 合成菜单 · B 背包<br/>
+      无帆：木筏随洋流同漂浮物同向漂移、略快<br/>
+      有帆：转动视角掌舵，木筏朝视线方向航行
+    </div>
+
+    <div id="backpack">
+      <h3>背包 <span style="opacity:.5;font-weight:400">（按 B 关闭）</span></h3>
+      <div id="backpack-grid"></div>
+    </div>
+    <div id="prompt"></div>
+    <div id="crafting">
+      <h3>合成 (按 C 关闭)</h3>
+      <div id="recipe-list"></div>
+    </div>
+  </div>
+
+  <div id="overlay">
+    <h1>木筏求生</h1>
+    <p>点击屏幕开始 · 鼠标锁定控制权</p>
+  </div>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+    }
+  }
+  </script>
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>

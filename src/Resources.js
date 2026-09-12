@@ -1,0 +1,259 @@
+import * as THREE from 'three';
+import { CFG } from './let.js';
+
+export const TYPES = {
+  wood: { color: 0x8a5a2b, label: '木头', shape: 'box', radius: 0.55 },
+  plastic: { color: 0x4fa3d1, label: '塑料', shape: 'box', radius: 0.55 },
+  rope: { color: 0xc9b079, label: '绳索', shape: 'cyl', radius: 0.40 },
+  apple: { color: 0xd14f6a, label: '苹果', shape: 'model', radius: 0.45, model: 'apple' },
+  banana: { color: 0xe6c84f, label: '香蕉', shape: 'model', radius: 0.45, model: 'banana' },
+  orange: { color: 0xe08a2b, label: '橙子', shape: 'model', radius: 0.45, model: 'orange' },
+};
+
+// 漂浮资源系统：
+//  - 水上漂浮：随海浪正弦起伏 + 跟随波面法线倾斜（浮力感）
+//  - 水上移动：受洋流 + 随机扰动驱动漂移，越界自动回拉，避免漂走
+export class Resources {
+  constructor(scene, ocean, raft, inventory, viewDist, foodTemplates) {
+    this.scene = scene;
+    this.ocean = ocean;
+    this.raft = raft;
+    this.inv = inventory;
+    this.foodTemplates = foodTemplates || {}; // 食物 FBX 模型模板（克隆使用）
+    this.items = [];
+    this.pickupRadius = 2.2;
+    this.spawnTimer = 0;
+    this.t = 0;
+
+    // 视野外生成环与销毁半径（都基于视野距离，运行时由 CFG.viewDist 实时决定）
+    this.viewDist = CFG.viewDist;
+    this.current = new THREE.Vector3(0.6, 0, 0.4).normalize(); // 全局洋流方向（漂浮物大致同向）
+    this.center = new THREE.Vector3(0, 0, 0); // 资源生成中心（随玩家/木筏移动）
+    this.prevCenter = new THREE.Vector3();
+    this.playerVel = new THREE.Vector3(); // 玩家（木筏）相对移动速度
+
+    for (let i = 0; i < 14; i++) this.spawn();
+  }
+
+  spawn() {
+    const keys = Object.keys(TYPES);
+    const type = keys[(Math.random() * keys.length) | 0];
+    const def = TYPES[type];
+
+    let mesh;
+    if (def.shape === 'model' && this.foodTemplates[def.model]) {
+      mesh = this.foodTemplates[def.model].clone(true); // 克隆共享几何体的食物模型
+    } else if (def.shape === 'cyl') {
+      mesh = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.25, 0.25, 0.8, 8),
+        new THREE.MeshStandardMaterial({ color: def.color })
+      );
+    } else {
+      mesh = new THREE.Mesh(
+        new THREE.BoxGeometry(0.6, 0.4, 0.6),
+        new THREE.MeshStandardMaterial({ color: def.color })
+      );
+    }
+    mesh.castShadow = true;
+    mesh.scale.setScalar(CFG.floatScale[type]); // 漂浮物大小（按类型单独可调）
+    const Interval = setInterval(() => {
+      if (!CFG.Debug) clearInterval(Interval);
+      mesh.scale.setScalar(CFG.floatScale[type]);
+    }, 100);
+    // 生成位置：调试模式下在玩家附近随机生成（便于观察），否则在视野外的上游环生成
+    let spawnAng, dist;
+    if (CFG.Debug) {
+      spawnAng = Math.random() * Math.PI * 2; // 玩家四周任意方向
+      dist = 4 + Math.random() * 8;           // 4~12 单位内
+    } else {
+      // 生成方向（弧）取"玩家相对移动方向"的前方 ±90°：玩家移动时物品会从前方迎面漂来
+      let ref;
+      if (this.playerVel.lengthSq() > 0.04) ref = this.playerVel.clone().setY(0).normalize();
+      else ref = this.current.clone(); // 静止时退化为洋流方向
+      const ang = Math.atan2(ref.z, ref.x);
+      spawnAng = ang + (Math.random() - 0.5) * Math.PI; // 玩家前进方向 ±90° 内
+      const vd = CFG.viewDist;
+      const spawnMin = vd + 4, spawnMax = vd + 22; // 视野外生成环（实时跟随视野）
+      dist = spawnMin + Math.random() * (spawnMax - spawnMin);
+    }
+    mesh.position.set(this.center.x + Math.cos(spawnAng) * dist, 0, this.center.z + Math.sin(spawnAng) * dist);
+
+    // 每个漂浮物沿同一洋流方向、速度相近，仅叠加小幅随机扰动
+    const speed = CFG.floatSpeedMin + Math.random() * (CFG.floatSpeedMax - CFG.floatSpeedMin);
+    const drift = this.current.clone().multiplyScalar(speed)
+      .add(new THREE.Vector3((Math.random() - 0.5) * 0.4, 0, (Math.random() - 0.5) * 0.4));
+
+    const item = {
+      type,
+      mesh,
+      radius: TYPES[type].radius * CFG.floatScale[type],   // 碰撞半径（随大小缩放）
+      disposable: def.shape !== 'model',          // 模型为克隆共享几何体，不可 dispose
+      phase: Math.random() * Math.PI * 2,        // 起伏相位错开
+      bobAmp: 0.25 + Math.random() * 0.15,        // 起伏幅度
+      drift,                                      // 当前漂移速度（碰撞时改变）
+      baseDrift: drift.clone(),                   // 原始漂移速度（停止接触后还原）
+      wanderPhase: Math.random() * Math.PI * 2,
+    };
+
+    this.scene.add(mesh);
+    this.items.push(item);
+  }
+
+  // 返回玩家可拾取的最近物体（用于提示与互动）。
+  nearest(playerPos) {
+    let best = null, bestD = this.pickupRadius;
+    for (const it of this.items) {
+      const d = it.mesh.position.distanceTo(playerPos);
+      if (d < bestD) { bestD = d; best = it; }
+    }
+    return best;
+  }
+
+  collect(it) {
+    const idx = this.items.indexOf(it);
+    if (idx === -1) return;
+    this.inv.add(it.type, 1);
+    this._remove(it);
+    this.items.splice(idx, 1);
+  }
+
+  // 从场景移除并释放几何体（模型克隆共享几何体，仅释放一次性几何）
+  _remove(it) {
+    this.scene.remove(it.mesh);
+    if (it.disposable) {
+      it.mesh.traverse((o) => { if (o.geometry) o.geometry.dispose(); });
+    }
+  }
+
+  // 近似碰撞：把漂浮物推出玩家/木筏格并反弹法向速度。返回本帧是否发生接触。
+  // 反弹后速度大小不变（像弹性碰撞）；离开接触后由调用方逐渐还原到 baseDrift。
+  _collide(it, player) {
+    const p = it.mesh.position;
+    const R = it.radius;
+    let hit = false;
+
+    // 1) 玩家：半径 0.7 圆柱 + 物体自身半径
+    const dxp = p.x - player.x, dzp = p.z - player.z;
+    const dp = Math.hypot(dxp, dzp);
+    const minP = 0.7 + R;
+    if (dp < minP) {
+      hit = true;
+      const nx = dxp / (dp || 1), nz = dzp / (dp || 1);
+      const push = minP - dp;
+      p.x += nx * push;
+      p.z += nz * push;
+      const vn = it.drift.x * nx + it.drift.z * nz; // 沿法线速度(负=撞向玩家)
+      if (vn < 0) { it.drift.x -= vn * nx * 2; it.drift.z -= vn * nz * 2; } // 法向全反射
+      it.drift.x += nx * 0.2; it.drift.z += nz * 0.2; // 轻微外推，避免粘连
+    }
+
+    // 2) 木筏格子：半格方块 + 物体半径（全反射，保留原速）
+    const [gx, gz] = this.raft.worldToGrid(p.x, p.z);
+    if (this.raft.hasTile(gx, gz)) {
+      const half = this.raft.tileSize * 0.48;
+      const [cx, cz] = this.raft.gridToWorld(gx, gz);
+      const dx = p.x - cx, dz = p.z - cz;
+      if (Math.abs(dx) < half + R && Math.abs(dz) < half + R) {
+        hit = true;
+        const penX = half + R - Math.abs(dx);
+        const penZ = half + R - Math.abs(dz);
+        if (penX < penZ) {
+          const s = dx >= 0 ? 1 : -1;
+          p.x = cx + s * (half + R);
+          if (it.drift.x * s < 0) it.drift.x = -it.drift.x; // 法向全反射
+          it.drift.x += s * 0.2;
+        } else {
+          const s = dz >= 0 ? 1 : -1;
+          p.z = cz + s * (half + R);
+          if (it.drift.z * s < 0) it.drift.z = -it.drift.z;
+          it.drift.z += s * 0.2;
+        }
+      }
+    }
+
+    // 全局限速，杜绝任何情况下无限加速飞走
+    const maxV = 1.5;
+    const sp = Math.hypot(it.drift.x, it.drift.z);
+    if (sp > maxV) { it.drift.x *= maxV / sp; it.drift.z *= maxV / sp; }
+
+    return hit;
+  }
+
+  update(dt, playerPos, t) {
+    if (t === undefined) { this.t += dt; t = this.t; }
+    this.t = t;
+    if (playerPos) {
+      // 由相邻帧玩家位移估算相对移动速度，供生成方向使用
+      if (this.prevCenter.lengthSq() > 0)
+        this.playerVel.copy(playerPos).sub(this.prevCenter).multiplyScalar(dt > 0 ? 1 / dt : 0);
+      this.center.copy(playerPos);
+      this.prevCenter.copy(playerPos);
+    }
+
+    const toRemove = [];
+    for (const it of this.items) {
+      // 调试模式：漂浮物不移动（不平移、不碰撞、不自旋），仅保持贴在水面上
+      if (!CFG.Debug) {
+        // —— 水上移动：漂移 + 缓慢随机游走 ——
+        const wander = new THREE.Vector3(
+          Math.sin(t * 0.3 + it.wanderPhase),
+          0,
+          Math.cos(t * 0.23 + it.wanderPhase)
+        ).multiplyScalar(0.25);
+        const vel = it.drift.clone().add(wander);
+
+        it.mesh.position.x += vel.x * dt;
+        it.mesh.position.z += vel.z * dt;
+
+        // —— 近似碰撞：与玩家、木筏格互相阻挡 ——
+        const hit = this._collide(it, playerPos);
+
+        // 停止接触后，漂移速度逐渐还原到原始 baseDrift（像被弹开后恢复本来的漂流）
+        if (!hit) {
+          const k = 1 - Math.exp(-dt * 1.5);
+          it.drift.x += (it.baseDrift.x - it.drift.x) * k;
+          it.drift.z += (it.baseDrift.z - it.drift.z) * k;
+        }
+
+        // 跟随波面法线倾斜，模拟随浪摇摆
+        const wx0 = it.mesh.position.x, wz0 = it.mesh.position.z;
+        const hx = this.ocean.heightAt(wx0 + 0.5, wz0, t) - this.ocean.heightAt(wx0 - 0.5, wz0, t);
+        const hz = this.ocean.heightAt(wx0, wz0 + 0.5, t) - this.ocean.heightAt(wx0, wz0 - 0.5, t);
+        const normal = new THREE.Vector3(-hx, 1, -hz).normalize();
+        const up = new THREE.Vector3(0, 1, 0);
+        it.mesh.quaternion.setFromUnitVectors(up, normal);
+        it.mesh.rotateY(t * 0.2 + it.phase); // 叠加缓慢自旋
+      }
+
+      // —— 水上漂浮：贴紧真实海面高度（始终生效） ——
+      const wx = it.mesh.position.x, wz = it.mesh.position.z;
+      it.mesh.position.y = this.ocean.surfaceY(wx, wz, t) + 0.12;
+
+      // 漂出视野范围则销毁（实时跟随视野）
+      const d = Math.hypot(wx - playerPos.x, wz - playerPos.z);
+      if (d > CFG.viewDist + 35) toRemove.push(it);
+    }
+    for (const it of toRemove) this._despawn(it);
+
+    // 维持场上资源数量（漂出视野会销毁，这里持续补充）
+    this.spawnTimer += dt;
+    if (this.spawnTimer > 3) {
+      this.spawnTimer = 0;
+      if (this.items.length < 16) this.spawn();
+    }
+  }
+
+  // 离开视野后销毁（不计入背包）
+  _despawn(it) {
+    const idx = this.items.indexOf(it);
+    if (idx === -1) return;
+    this._remove(it);
+    this.items.splice(idx, 1);
+  }
+
+  // 调试开关切换时调用：清空现有漂浮物并按当前 CFG.Debug 重新布置（近处/远处）
+  resetForDebug() {
+    for (const it of this.items.slice()) this._despawn(it);
+    for (let i = 0; i < 14; i++) this.spawn();
+  }
+}
