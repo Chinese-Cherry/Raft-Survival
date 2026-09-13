@@ -17,18 +17,31 @@
       margin: -3px 0 0 -3px; background: #fff; border-radius: 50%; opacity: .85;
     }
     #equipped {
-      position: absolute; bottom: 16px; left: 50%; transform: translateX(-50%);
+      position: absolute; bottom: 88px; left: 50%; transform: translateX(-50%);
       background: rgba(0,0,0,.45); padding: 6px 16px; border-radius: 20px;
-      font-size: 14px; display: none;
+      font-size: 14px; display: none; z-index: 2;
     }
     #equipped .key { opacity: .6; font-size: 11px; margin-right: 6px; }
-    #inventory {
-      position: absolute; left: 16px; bottom: 16px; display: flex; gap: 10px;
-      background: rgba(0,0,0,.35); padding: 10px 12px; border-radius: 10px; font-size: 14px;
+
+    /* 底部快捷栏：9 格 */
+    #hotbar {
+      position: absolute; bottom: 16px; left: 50%; transform: translateX(-50%);
+      display: flex; gap: 6px; pointer-events: auto; z-index: 2;
     }
-    .slot { min-width: 64px; text-align: center; }
-    .slot .name { opacity: .7; font-size: 11px; }
-    .slot .count { font-size: 18px; font-weight: 700; }
+    #hotbar .slot {
+      width: 56px; height: 56px; background: rgba(0,0,0,.42);
+      border: 2px solid rgba(255,255,255,.15); border-radius: 8px;
+      position: relative; display: flex; flex-direction: column;
+      align-items: center; justify-content: center; cursor: pointer; color: #fff;
+      user-select: none;
+    }
+    #hotbar .slot.active {
+      border-color: #ffd34d; box-shadow: 0 0 8px rgba(255,211,77,.6);
+    }
+    #hotbar .slot .num { position: absolute; top: 2px; left: 4px; font-size: 10px; opacity: .5; }
+    #hotbar .slot .ico { font-size: 24px; line-height: 1; }
+    #hotbar .slot .nm  { font-size: 10px; opacity: .8; margin-top: 2px; }
+    #hotbar .slot .cnt { position: absolute; right: 4px; bottom: 2px; font-size: 12px; font-weight: 700; }
     #prompt {
       position: absolute; top: 58%; left: 50%; transform: translateX(-50%);
       background: rgba(0,0,0,.5); padding: 6px 14px; border-radius: 8px; font-size: 15px; display: none;
@@ -50,23 +63,23 @@
       background: rgba(0,0,0,.35); padding: 10px 12px; border-radius: 10px; opacity: .9;
     }
     #backpack {
-      position: absolute; right: 16px; bottom: 16px; width: 300px;
-      background: rgba(0,0,0,.45); padding: 14px; border-radius: 10px; display: none;
+      position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+      width: 320px; background: rgba(0,0,0,.5); padding: 16px; border-radius: 12px;
+      display: none; pointer-events: auto; z-index: 3;
     }
     #backpack h3 { font-size: 15px; margin-bottom: 10px; }
     #backpack-grid {
       display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px;
     }
     .cell {
-      aspect-ratio: 1; background: rgba(255,255,255,.08); border-radius: 8px;
-      display: flex; flex-direction: column; align-items: center; justify-content: center;
-      position: relative; font-size: 11px;
+      aspect-ratio: 1; background: rgba(255,255,255,.08); border: 2px solid rgba(255,255,255,.08);
+      border-radius: 8px; display: flex; flex-direction: column; align-items: center;
+      justify-content: center; position: relative; font-size: 11px; color: #fff; cursor: pointer;
     }
-    .cell .ico { font-size: 22px; }
-    .cell .cnt {
-      position: absolute; right: 4px; bottom: 2px; font-size: 12px; font-weight: 700;
-    }
-    .cell .nm { opacity: .7; margin-top: 2px; }
+    .cell.active, .cell:hover { border-color: rgba(255,211,77,.7); }
+    .cell .ico { font-size: 24px; line-height: 1; }
+    .cell .cnt { position: absolute; right: 4px; bottom: 2px; font-size: 12px; font-weight: 700; }
+    .cell .nm  { opacity: .7; margin-top: 2px; font-size: 10px; }
     .empty-hint { opacity: .5; font-size: 12px; grid-column: 1 / -1; text-align: center; padding: 12px 0; }
     #overlay {
       position: fixed; inset: 0; background: rgba(5,10,25,.85); color: #fff;
@@ -84,12 +97,14 @@
     <div id="crosshair"></div>
     <div id="equipped"></div>
     <div id="help">
-      WASD 移动 · 鼠标 视角 · Shift 疾跑<br/>
-      E 拾取/互动 · 左键 建造/放置<br/>
-      C 合成菜单 · B 背包<br/>
+      WASD 移动 · 鼠标 视角 · Shift 疾跑 · Space 跳跃<br/>
+      E 拾取/互动 · 左键 建造/放置 · F 使用道具<br/>
+      1-9 选择快捷栏 · C 合成菜单 · B 背包<br/>
       无帆：木筏随洋流同漂浮物同向漂移、略快<br/>
       有帆：转动视角掌舵，木筏朝视线方向航行
     </div>
+
+    <div id="hotbar"></div>
 
     <div id="backpack">
       <h3>背包 <span style="opacity:.5;font-weight:400">（按 B 关闭）</span></h3>
