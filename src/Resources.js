@@ -8,6 +8,7 @@ export const TYPES = {
   apple: { color: 0xd14f6a, label: '苹果', shape: 'model', radius: 0.45, model: 'apple' },
   banana: { color: 0xe6c84f, label: '香蕉', shape: 'model', radius: 0.45, model: 'banana' },
   orange: { color: 0xe08a2b, label: '橙子', shape: 'model', radius: 0.45, model: 'orange' },
+  leaf:   { color: 0x2e7d32, label: '树叶', shape: 'model', radius: 0.5, model: 'leaf' },
 };
 
 // 漂浮资源系统：
@@ -56,7 +57,14 @@ export class Resources {
       );
     }
     mesh.castShadow = true;
-    mesh.scale.setScalar(CFG.floatScale[type]); // 漂浮物大小（按类型单独可调）
+    // 计算模型原生包围盒（未缩放），得到碰撞用的半长/半宽
+    mesh.updateMatrixWorld(true);
+    const bbox = new THREE.Box3().setFromObject(mesh);
+    const bsize = new THREE.Vector3();
+    bbox.getSize(bsize);
+    const baseHalfX = bsize.x / 2, baseHalfZ = bsize.z / 2;
+    const sc = CFG.floatScale[type];
+    mesh.scale.setScalar(sc); // 漂浮物大小（按类型单独可调）
 
     // 生成位置：调试/开局时在木筏附近随机生成（便于观察与开局即有资源），
     // 否则在视野外的上游环生成（物品从前方迎面漂来）
@@ -93,7 +101,9 @@ export class Resources {
     const item = {
       type,
       mesh,
-      radius: TYPES[type].radius * CFG.floatScale[type],   // 碰撞半径（随大小缩放）
+      baseHalfX, baseHalfZ,                        // 未缩放时包围盒的半长/半宽
+      halfX: baseHalfX * sc,                       // 当前碰撞半长（随大小缩放）
+      halfZ: baseHalfZ * sc,                       // 当前碰撞半宽（随大小缩放）
       disposable: def.shape !== 'model',          // 模型为克隆共享几何体，不可 dispose
       phase: Math.random() * Math.PI * 2,        // 起伏相位错开
       bobAmp: 0.25 + Math.random() * 0.15,        // 起伏幅度
@@ -135,43 +145,56 @@ export class Resources {
   // 近似碰撞：把漂浮物推出玩家/木筏格并反弹法向速度。返回本帧是否发生接触。
   // 反弹后速度大小不变（像弹性碰撞）；离开接触后由调用方逐渐还原到 baseDrift。
   _collide(it, player) {
+    if (it.collideDisabled) return false; // 被钩锁钩住时取消碰撞
     const p = it.mesh.position;
-    const R = it.radius;
+
+    // 长方体碰撞盒：尺寸在生成时（渲染结束后）一次性按模型包围盒确定（baseHalfX/baseHalfZ）。
+    // 运行时仅按网格绕 Y 的旋转得到有效半长/半宽，不逐帧调用 setFromObject 重建包围盒（避免卡顿）。
+    it.mesh.updateMatrix();
+    const e = it.mesh.matrix.elements;
+    const ang = Math.atan2(e[8], e[0]);            // 绕 Y 旋转角（含波动倾斜近似）
+    const c = Math.abs(Math.cos(ang)), s = Math.abs(Math.sin(ang));
+    const hx = it.halfX * c + it.halfZ * s;        // 旋转后 AABB 半长
+    const hz = it.halfX * s + it.halfZ * c;        // 旋转后 AABB 半宽
     let hit = false;
 
-    // 1) 玩家：半径 0.7 圆柱 + 物体自身半径
+    // 1) 玩家：用模型半长/半宽做盒状碰撞（玩家视作半径 0.7 的圆柱，按 AABB 近似）
     const dxp = p.x - player.x, dzp = p.z - player.z;
-    const dp = Math.hypot(dxp, dzp);
-    const minP = 0.7 + R;
-    if (dp < minP) {
+    const bx = hx + 0.7, bz = hz + 0.7;
+    const ox = bx - Math.abs(dxp), oz = bz - Math.abs(dzp);
+    if (ox > 0 && oz > 0) {
       hit = true;
-      const nx = dxp / (dp || 1), nz = dzp / (dp || 1);
-      const push = minP - dp;
-      p.x += nx * push;
-      p.z += nz * push;
-      const vn = it.drift.x * nx + it.drift.z * nz; // 沿法线速度(负=撞向玩家)
-      if (vn < 0) { it.drift.x -= vn * nx * 2; it.drift.z -= vn * nz * 2; } // 法向全反射
-      it.drift.x += nx * 0.2; it.drift.z += nz * 0.2; // 轻微外推，避免粘连
+      if (ox < oz) {
+        const nx = dxp >= 0 ? 1 : -1;
+        p.x += nx * ox;
+        if (it.drift.x * nx < 0) it.drift.x = -it.drift.x; // 法向全反射
+        it.drift.x += nx * 0.2;
+      } else {
+        const nz = dzp >= 0 ? 1 : -1;
+        p.z += nz * oz;
+        if (it.drift.z * nz < 0) it.drift.z = -it.drift.z;
+        it.drift.z += nz * 0.2;
+      }
     }
 
-    // 2) 木筏格子：半格方块 + 物体半径（全反射，保留原速）
+    // 2) 木筏格子：半格方块 + 物体半长/半宽（全反射，保留原速）
     const [gx, gz] = this.raft.worldToGrid(p.x, p.z);
     if (this.raft.hasTile(gx, gz)) {
       const half = this.raft.tileSize * 0.48;
       const [cx, cz] = this.raft.gridToWorld(gx, gz);
       const dx = p.x - cx, dz = p.z - cz;
-      if (Math.abs(dx) < half + R && Math.abs(dz) < half + R) {
+      if (Math.abs(dx) < half + hx && Math.abs(dz) < half + hz) {
         hit = true;
-        const penX = half + R - Math.abs(dx);
-        const penZ = half + R - Math.abs(dz);
+        const penX = half + hx - Math.abs(dx);
+        const penZ = half + hz - Math.abs(dz);
         if (penX < penZ) {
           const s = dx >= 0 ? 1 : -1;
-          p.x = cx + s * (half + R);
+          p.x = cx + s * (half + hx);
           if (it.drift.x * s < 0) it.drift.x = -it.drift.x; // 法向全反射
           it.drift.x += s * 0.2;
         } else {
           const s = dz >= 0 ? 1 : -1;
-          p.z = cz + s * (half + R);
+          p.z = cz + s * (half + hz);
           if (it.drift.z * s < 0) it.drift.z = -it.drift.z;
           it.drift.z += s * 0.2;
         }
@@ -201,7 +224,16 @@ export class Resources {
     for (const it of this.items) {
       // 运行时同步缩放（调试面板调大小实时生效）
       it.mesh.scale.setScalar(CFG.floatScale[it.type]);
-      it.radius = TYPES[it.type].radius * CFG.floatScale[it.type];
+      const sc = CFG.floatScale[it.type];
+      it.halfX = it.baseHalfX * sc;
+      it.halfZ = it.baseHalfZ * sc;
+
+      // 被钩锁拉回中：位置由 Game 控制，这里仅保持贴在水面（仍参与越界销毁判断）
+      if (it.pulling) {
+        const wx = it.mesh.position.x, wz = it.mesh.position.z;
+        it.mesh.position.y = this.ocean.surfaceY(wx, wz, t) + 0.12;
+        continue;
+      }
 
       // 调试模式：漂浮物不移动（不平移、不碰撞、不自旋），仅保持贴在水面上
       if (!CFG.Debug) {
@@ -248,7 +280,7 @@ export class Resources {
 
     // 维持场上资源数量（漂出视野会销毁，这里持续补充）
     this.spawnTimer += dt;
-    if (this.spawnTimer > 3) {
+    if (this.spawnTimer > CFG.spawnInterval) {
       this.spawnTimer = 0;
       if (this.items.length < 16) this.spawn();
     }
