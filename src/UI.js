@@ -16,6 +16,8 @@ export class UI {
     this.elBackpackGrid = document.getElementById("backpack-grid");
     this.elHotbar = document.getElementById("hotbar");
     this.elEquipped = document.getElementById("equipped");
+    this.elCharge = document.getElementById("charge");
+    this.elChargeFill = this.elCharge.querySelector("i");
     this.elOverlay = document.getElementById("overlay");
     this.elApp = document.getElementById("app");
 
@@ -35,7 +37,7 @@ export class UI {
     document.addEventListener("keydown", (e) => {
       if (e.code === "KeyC") this.toggleCrafting();
       if (e.code === "KeyB") this.toggleBackpack();
-      if (/^Digit[1-9]$/.test(e.code)) this.selectSlot(+e.code.slice(5) - 1);
+      if (/^Digit[1-9]$/.test(e.code) && !this.openPanel) this.selectSlot(+e.code.slice(5) - 1);
     });
 
     this.renderRecipes();
@@ -91,12 +93,13 @@ export class UI {
     this.renderRecipes();
   }
 
-  // 选中快捷栏格；若格内是工具则同步装备。
+  // 选中快捷栏格：格内是工具则装备，切到其他格（空/非工具）则卸下。
   selectSlot(i) {
     if (i < 0 || i >= HOTBAR_SIZE) return;
     this.activeSlot = i;
     const s = this.inv.hotbar[i];
     if (s && ITEMS[s.id]?.category === "tool") this.game._equip(s.id);
+    else this.game._equip(null);
     this.renderHotbar();
   }
 
@@ -110,9 +113,17 @@ export class UI {
   setEquipped(id) {
     if (!id) { this.elEquipped.style.display = "none"; return; }
     const def = ITEMS[id];
+    const hint = (id === 'hook_lock' || id === 'fishing_rod') ? '左键蓄力抛出' : '左键 使用';
     this.elEquipped.style.display = "block";
     this.elEquipped.innerHTML =
-      `<span class="key">[已装备]</span>${def.icon} ${def.name}　<span style="opacity:.6">F 使用</span>`;
+      `<span class="key">[已装备]</span>${def.icon} ${def.name}　<span style="opacity:.6">${hint}</span>`;
+  }
+
+  // 蓄力条：p 为 0~1 的进度；传 null 隐藏。
+  setCharge(p) {
+    if (p == null) { this.elCharge.style.display = "none"; return; }
+    this.elCharge.style.display = "block";
+    this.elChargeFill.style.width = Math.max(0, Math.min(100, p * 100)) + "%";
   }
 
   // 打开/切换面板。若已有另一面板打开则禁止打开（互斥）；
