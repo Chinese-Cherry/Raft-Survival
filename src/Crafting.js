@@ -9,10 +9,10 @@ export class Crafting {
       { id: 'wall', name: '木墙',     cost: { lumber: 3, rope: 1 },  desc: '防御结构', structural: true },
       { id: 'sail', name: '船帆',     cost: { lumber: 4, rope: 2 },  desc: '可操作航行：转动视角掌舵', structural: true },
       // 产出类配方
-      { id: 'rope',        name: '绳索',   cost: { plastic: 2 },            output: { id: 'rope', n: 1 },        desc: '由塑料制成' },
-      { id: 'hook',        name: '铁钩',   cost: { lumber: 1, rope: 1 },      output: { id: 'hook', n: 1 },        desc: '道具' },
+      { id: 'rope',        name: '绳索',   cost: { leaf: 2 },            output: { id: 'rope', n: 1 },        desc: '由树叶中的纤维制成' },
+      { id: 'hook_lock',   name: '钩锁',   cost: { lumber: 2, rope: 2, plastic: 1 }, output: { id: 'hook_lock', n: 1 }, desc: '抛出钩住海上漂浮物并拉回' },
       { id: 'fishing_rod', name: '鱼竿',   cost: { lumber: 2, rope: 1, plastic: 1 }, output: { id: 'fishing_rod', n: 1 }, desc: '道具' },
-      { id: 'net',         name: '渔网',   cost: { rope: 3, plastic: 2 },   output: { id: 'net', n: 1 },         desc: '道具' },
+      { id: 'net',         name: '渔网',   cost: { rope: 3, rope: 2 },   output: { id: 'net', n: 1 },         desc: '道具' },
       { id: 'spear',       name: '鱼叉',   cost: { lumber: 2, rope: 1 },      output: { id: 'spear', n: 1 },       desc: '道具' },
     ];
   }
