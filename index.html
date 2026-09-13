@@ -16,6 +16,16 @@
       position: absolute; top: 50%; left: 50%; width: 6px; height: 6px;
       margin: -3px 0 0 -3px; background: #fff; border-radius: 50%; opacity: .85;
     }
+    #charge {
+      position: absolute; top: 50%; left: 50%; width: 90px; height: 6px;
+      margin: 16px 0 0 -45px; background: rgba(0,0,0,.45);
+      border: 1px solid rgba(255,255,255,.3); border-radius: 4px;
+      overflow: hidden; display: none;
+    }
+    #charge > i {
+      display: block; height: 100%; width: 0%;
+      background: linear-gradient(90deg, #ffd34d, #ff7a3c);
+    }
     #equipped {
       position: absolute; bottom: 88px; left: 50%; transform: translateX(-50%);
       background: rgba(0,0,0,.45); padding: 6px 16px; border-radius: 20px;
@@ -95,6 +105,7 @@
 
   <div id="hud">
     <div id="crosshair"></div>
+    <div id="charge"><i></i></div>
     <div id="equipped"></div>
     <div id="help">
       WASD 移动 · 鼠标 视角 · Shift 疾跑 · Space 跳跃<br/>
