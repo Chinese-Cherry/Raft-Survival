@@ -328,7 +328,9 @@ export class Game {
 
     this.ocean.update(t);
     this.raft.update(this.ocean, t, dt, this.player);
-    this.player.update(dt, this.ocean, t);
+    // 合成表/背包打开时冻结玩家移动（但仍随木筏漂移），关闭后恢复
+    const frozen = this.ui.openPanel !== null;
+    this.player.update(dt, this.ocean, t, frozen);
     this.resources.update(dt, this.player.pos, t);
 
     if (this.toolCooldown > 0) this.toolCooldown -= dt;

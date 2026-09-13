@@ -51,7 +51,8 @@ export class Player {
 
   requestLock() { this.dom.requestPointerLock(); }
 
-  update(dt, ocean, t) {
+  update(dt, ocean, t, frozen = false) {
+    if (frozen) this.jumpQueued = false; // 面板打开时禁止起跳（清除排队中的跳跃）
     // 朝向向量
     const dir = new THREE.Vector3(
       -Math.sin(this.yaw) * Math.cos(this.pitch),
@@ -69,6 +70,8 @@ export class Player {
     const onRaft = this.raft.isOnRaft(this.pos.x, this.pos.z);
     // 腾空（跳跃中）按满速移动，保证跨过木筏边界时相对输入速度不突变
     const sp = (this.keys['ShiftLeft'] ? this.speed * 1.7 : this.speed) * (onRaft || this.airborne ? 1 : 0.4);
+    // 面板打开（frozen）时忽略 WASD 输入，玩家无法自主移动（仍随木筏漂移）
+    if (frozen) move.set(0, 0, 0);
     if (move.lengthSq() > 0) move.normalize().multiplyScalar(sp * dt);
     this.pos.add(move);
 

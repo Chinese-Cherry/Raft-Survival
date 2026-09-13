@@ -1,60 +1,103 @@
 import { ITEMS } from "./Items.js";
+import { HOTBAR_SIZE, PACK_SIZE } from "./Inventory.js";
 
-// HUD/UI 管理：快捷栏（资源）、背包面板（全部物品）、交互提示、合成面板、指针锁定遮罩。
+// HUD/UI 管理：底部快捷栏（9格）、背包面板（4x4 固定格子）、交互提示、合成面板、指针锁定遮罩。
 export class UI {
   constructor(inventory, crafting, game) {
     this.inv = inventory;
     this.crafting = crafting;
     this.game = game;
+    this.activeSlot = 0; // 当前选中的快捷栏格
 
     this.elPrompt = document.getElementById("prompt");
     this.elCraft = document.getElementById("crafting");
     this.elRecipes = document.getElementById("recipe-list");
     this.elBackpack = document.getElementById("backpack");
     this.elBackpackGrid = document.getElementById("backpack-grid");
+    this.elHotbar = document.getElementById("hotbar");
     this.elEquipped = document.getElementById("equipped");
     this.elOverlay = document.getElementById("overlay");
+    this.elApp = document.getElementById("app");
+
+    this.openPanel = null; // 当前打开的面板：'crafting' | 'backpack' | null
 
     this.elOverlay.addEventListener("click", () => {
+      if (this.openPanel) return;
       game.player.requestLock();
       this.elOverlay.style.display = "none";
     });
-    document.addEventListener("click", () => {
+
+    this.elApp.addEventListener("click", () => {
+      if (this.openPanel) return; // 面板打开时不重新锁定（保留鼠标）
       game.player.requestLock();
     });
 
     document.addEventListener("keydown", (e) => {
       if (e.code === "KeyC") this.toggleCrafting();
       if (e.code === "KeyB") this.toggleBackpack();
+      if (/^Digit[1-9]$/.test(e.code)) this.selectSlot(+e.code.slice(5) - 1);
     });
 
     this.renderRecipes();
     this.renderBackpack();
+    this.renderHotbar();
   }
 
-  // 背包面板：显示所有拥有的物品（资源 + 道具），4 列网格
-  renderBackpack() {
-    const entries = this.inv.entries();
-    if (entries.length === 0) {
-      this.elBackpackGrid.innerHTML =
-        '<div class="empty-hint">背包是空的，去海里捞点东西吧</div>';
-      return;
-    }
-    this.elBackpackGrid.innerHTML = entries
-      .map(
-        ({ id, n, def }) => `
-      <div class="cell" title="${def.name}">
-        <div class="ico">${def.icon}</div>
-        <div class="nm">${def.name}</div>
-        <div class="cnt">${n}</div>
-      </div>`,
-      )
+  // 渲染单格（快捷栏/背包通用）。slot 为 null 时显示空格子。
+  cellHTML(slot, idx, opts = {}) {
+    const cls = (opts.cls || "cell") + (opts.active ? " active" : "");
+    const num = opts.num ? `<span class="num">${idx + 1}</span>` : "";
+    if (!slot) return `<div class="${cls}" data-idx="${idx}">${num}</div>`;
+    const def = ITEMS[slot.id];
+    const cnt = slot.n > 1 ? `<span class="cnt">${slot.n}</span>` : "";
+    return `<div class="${cls}" data-idx="${idx}" title="${def.name}">
+      ${num}
+      <span class="ico">${def.icon}</span>
+      <span class="nm">${def.name}</span>
+      ${cnt}
+    </div>`;
+  }
+
+  // 底部快捷栏：9 格，始终显示；点击或按 1-9 选中（工具类选中即装备）。
+  renderHotbar() {
+    this.elHotbar.innerHTML = this.inv.hotbar
+      .map((s, i) => this.cellHTML(s, i, { cls: "slot", active: i === this.activeSlot, num: true }))
       .join("");
+    this.elHotbar.querySelectorAll(".slot").forEach((el) => {
+      el.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        this.selectSlot(+el.dataset.idx);
+      });
+    });
+  }
+
+  // 背包面板：4x4=16 格固定格子（无物品显示空格子）；点击工具类格子可装备。
+  renderBackpack() {
+    let cells = "";
+    for (let i = 0; i < PACK_SIZE; i++) cells += this.cellHTML(this.inv.pack[i], i, { cls: "cell" });
+    this.elBackpackGrid.innerHTML = cells;
+    this.elBackpackGrid.querySelectorAll(".cell").forEach((el) => {
+      el.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        const s = this.inv.pack[+el.dataset.idx];
+        if (s && ITEMS[s.id]?.category === "tool") this.game._equip(s.id);
+      });
+    });
   }
 
   refreshCounts() {
+    this.renderHotbar();
     this.renderBackpack();
     this.renderRecipes();
+  }
+
+  // 选中快捷栏格；若格内是工具则同步装备。
+  selectSlot(i) {
+    if (i < 0 || i >= HOTBAR_SIZE) return;
+    this.activeSlot = i;
+    const s = this.inv.hotbar[i];
+    if (s && ITEMS[s.id]?.category === "tool") this.game._equip(s.id);
+    this.renderHotbar();
   }
 
   setPrompt(text) {
@@ -72,17 +115,31 @@ export class UI {
       `<span class="key">[已装备]</span>${def.icon} ${def.name}　<span style="opacity:.6">F 使用</span>`;
   }
 
-  toggleCrafting() {
-    const show = this.elCraft.style.display !== "block";
-    this.elCraft.style.display = show ? "block" : "none";
-    if (show) this.renderRecipes();
+  // 打开/切换面板。若已有另一面板打开则禁止打开（互斥）；
+  // 打开时释放鼠标（退出指针锁定），关闭（最后一个关闭）时重新锁定。
+  _openPanel(which) {
+    if (this.openPanel && this.openPanel !== which) return; // 另一个面板已开，禁止打开
+    if (this.openPanel === which) { this._closePanels(); return; } // 再次按下则关闭
+    if (which === 'crafting') {
+      this.elCraft.style.display = 'block';
+      this.renderRecipes();
+    } else {
+      this.elBackpack.style.display = 'block';
+      this.renderBackpack();
+    }
+    this.openPanel = which;
+    document.exitPointerLock?.(); // 显示鼠标
   }
 
-  toggleBackpack() {
-    const show = this.elBackpack.style.display !== "block";
-    this.elBackpack.style.display = show ? "block" : "none";
-    if (show) this.renderBackpack();
+  _closePanels() {
+    this.elCraft.style.display = 'none';
+    this.elBackpack.style.display = 'none';
+    this.openPanel = null;
+    this.game.player.requestLock(); // 全部关闭后重新锁定指针
   }
+
+  toggleCrafting() { this._openPanel('crafting'); }
+  toggleBackpack() { this._openPanel('backpack'); }
 
   renderRecipes() {
     this.elRecipes.innerHTML = this.crafting.recipes
