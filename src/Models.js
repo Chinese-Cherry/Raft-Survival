@@ -5,7 +5,7 @@ import { FBXLoader } from 'https://unpkg.com/three@0.160.0/examples/jsm/loaders/
 export const FOOD_MODELS = ['apple', 'banana', 'orange'];
 
 // 材料模型：与 models/material 下的 .fbx 一一对应
-export const MATERIAL_MODELS = ['plastic_sheet', 'rope', 'wood_plank'];
+export const MATERIAL_MODELS = ['plastic_sheet', 'rope', 'wood_plank', 'leaf'];
 
 // 归一化：缩放到统一尺寸，并把几何中心移到原点，方便随浪倾斜/旋转
 function normalize(obj) {
