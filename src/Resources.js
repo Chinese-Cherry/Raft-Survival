@@ -32,10 +32,11 @@ export class Resources {
     this.prevCenter = new THREE.Vector3();
     this.playerVel = new THREE.Vector3(); // 玩家（木筏）相对移动速度
 
-    for (let i = 0; i < 14; i++) this.spawn();
+    // 开局：在木筏附近生成一批漂浮物，便于立即收集
+    for (let i = 0; i < CFG.startCount; i++) this.spawn({ near: true });
   }
 
-  spawn() {
+  spawn(opts = {}) {
     const keys = Object.keys(TYPES);
     const type = keys[(Math.random() * keys.length) | 0];
     const def = TYPES[type];
@@ -56,15 +57,13 @@ export class Resources {
     }
     mesh.castShadow = true;
     mesh.scale.setScalar(CFG.floatScale[type]); // 漂浮物大小（按类型单独可调）
-    const Interval = setInterval(() => {
-      if (!CFG.Debug) clearInterval(Interval);
-      mesh.scale.setScalar(CFG.floatScale[type]);
-    }, 100);
-    // 生成位置：调试模式下在玩家附近随机生成（便于观察），否则在视野外的上游环生成
+
+    // 生成位置：调试/开局时在木筏附近随机生成（便于观察与开局即有资源），
+    // 否则在视野外的上游环生成（物品从前方迎面漂来）
     let spawnAng, dist;
-    if (CFG.Debug) {
-      spawnAng = Math.random() * Math.PI * 2; // 玩家四周任意方向
-      dist = 4 + Math.random() * 8;           // 4~12 单位内
+    if (CFG.Debug || opts.near) {
+      spawnAng = Math.random() * Math.PI * 2; // 木筏四周任意方向
+      dist = CFG.startSpawnMin + Math.random() * (CFG.startSpawnMax - CFG.startSpawnMin);
     } else {
       // 生成方向（弧）取"玩家相对移动方向"的前方 ±90°：玩家移动时物品会从前方迎面漂来
       let ref;
@@ -76,7 +75,15 @@ export class Resources {
       const spawnMin = vd + 4, spawnMax = vd + 22; // 视野外生成环（实时跟随视野）
       dist = spawnMin + Math.random() * (spawnMax - spawnMin);
     }
-    mesh.position.set(this.center.x + Math.cos(spawnAng) * dist, 0, this.center.z + Math.sin(spawnAng) * dist);
+    // 避免生成在木筏格子上：若落在筏面上，沿同方向逐步外推直至离开木筏
+    let px = this.center.x + Math.cos(spawnAng) * dist;
+    let pz = this.center.z + Math.sin(spawnAng) * dist;
+    for (let i = 0; i < 12 && this.raft.isOnRaft(px, pz); i++) {
+      dist += this.raft.tileSize;
+      px = this.center.x + Math.cos(spawnAng) * dist;
+      pz = this.center.z + Math.sin(spawnAng) * dist;
+    }
+    mesh.position.set(px, 0, pz);
 
     // 每个漂浮物沿同一洋流方向、速度相近，仅叠加小幅随机扰动
     const speed = CFG.floatSpeedMin + Math.random() * (CFG.floatSpeedMax - CFG.floatSpeedMin);
@@ -192,6 +199,10 @@ export class Resources {
 
     const toRemove = [];
     for (const it of this.items) {
+      // 运行时同步缩放（调试面板调大小实时生效）
+      it.mesh.scale.setScalar(CFG.floatScale[it.type]);
+      it.radius = TYPES[it.type].radius * CFG.floatScale[it.type];
+
       // 调试模式：漂浮物不移动（不平移、不碰撞、不自旋），仅保持贴在水面上
       if (!CFG.Debug) {
         // —— 水上移动：漂移 + 缓慢随机游走 ——
@@ -254,6 +265,6 @@ export class Resources {
   // 调试开关切换时调用：清空现有漂浮物并按当前 CFG.Debug 重新布置（近处/远处）
   resetForDebug() {
     for (const it of this.items.slice()) this._despawn(it);
-    for (let i = 0; i < 14; i++) this.spawn();
+    for (let i = 0; i < CFG.startCount; i++) this.spawn();
   }
 }
