@@ -48,6 +48,10 @@ export class Game {
     this._setupBuildGhost();
     this._setupTools();
     this._bindInteractions();
+    // 开局默认拥有钩锁（可制作），并直接装备
+    this.inventory.add('hook_lock', 1);
+    this._equip('hook_lock');
+    this.ui.refreshCounts();
     this._resize();
     window.addEventListener('resize', () => this._resize());
 
@@ -75,8 +79,9 @@ export class Game {
 
   _setupTools() {
     this.equipped = null;
-    this.toolOrder = ['hook', 'fishing_rod', 'net', 'spear'];
     this.toolCooldown = 0;
+    this.hook = null;      // 钩锁投射物状态（flying / pulling / retract）
+    this.charging = null;  // 蓄力状态 { type, t }
     this.toolMsg = '';
     this.toolMsgTimer = 0;
     this.fishing = null;
@@ -94,23 +99,37 @@ export class Game {
     );
     this.bobber.visible = false;
     this.scene.add(this.bobber);
+
+    // 钩锁可视化：钩头小球 + 钩线（相机→钩头）
+    this._hookMesh = new THREE.Mesh(
+      new THREE.SphereGeometry(0.18, 8, 8),
+      new THREE.MeshStandardMaterial({ color: 0xcfcfcf })
+    );
+    this._hookMesh.visible = false;
+    this.scene.add(this._hookMesh);
+    this.hookLine = new THREE.Line(
+      new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]),
+      new THREE.LineBasicMaterial({ color: 0xaaaaaa })
+    );
+    this.hookLine.visible = false;
+    this.scene.add(this.hookLine);
   }
 
   _bindInteractions() {
-    document.addEventListener('keydown', (e) => {
-      if (e.code === 'KeyE') this._tryCollect();
-      if (e.code === 'KeyF') this._useTool();
-      if (['Digit1', 'Digit2', 'Digit3', 'Digit4'].includes(e.code)) {
-        this._equip(this.toolOrder[+e.code.slice(-1) - 1]);
-      }
-    });
     document.addEventListener('mousedown', (e) => {
-      if (this.player.locked && e.button === 0) this._tryBuild();
+      if (this.ui.openPanel) return;
+      if (e.button === 0) this._onLeftDown();  // 左键：使用道具（鱼竿/钩锁蓄力） / 建造
+      if (e.button === 2) this._tryPickup();     // 右键：瞄准拾取
     });
+    document.addEventListener('mouseup', (e) => {
+      if (e.button === 0) this._onLeftUp();
+    });
+    document.addEventListener('contextmenu', (e) => e.preventDefault());
   }
 
   // —— 装备 / 使用 ——
   _equip(id) {
+    if (id === null) { this.equipped = null; this.ui.setEquipped(null); return; }
     if (!this.inventory.has(id)) {
       this.ui.setPrompt(`尚未拥有 ${ITEMS[id]?.name || id}`);
       return;
@@ -119,15 +138,36 @@ export class Game {
     this.ui.setEquipped(id);
   }
 
+  // 鱼竿/钩锁走蓄力抛出流程（左键按下蓄力、松开抛出），这里只处理瞬时道具
   _useTool() {
-    if (!this.equipped) { this.ui.setPrompt('未装备道具：按 1-4 装备'); return; }
+    if (!this.equipped) { this.ui.setPrompt('未装备道具：按数字键选中快捷栏道具'); return; }
     if (this.toolCooldown > 0) return;
     switch (this.equipped) {
-      case 'fishing_rod': this._useFishingRod(); break;
-      case 'hook':        this._useHook(); break;
-      case 'net':         this._useNet(); break;
-      case 'spear':       this._useSpear(); break;
+      case 'net':   this._useNet(); break;
+      case 'spear': this._useSpear(); break;
     }
+  }
+
+  // 左键按下：装备了蓄力类道具则开始蓄力，否则立即使用；空手则建造
+  _onLeftDown() {
+    if (!this.player.locked) return;
+    if (!this.equipped) { this._tryBuild(); return; }
+    if (this.toolCooldown > 0) return;
+    if (this.equipped === 'fishing_rod' || this.equipped === 'hook_lock') {
+      this.charging = { type: this.equipped, t: 0 };
+    } else {
+      this._useTool();
+    }
+  }
+
+  // 左键松开：按蓄力时长抛出鱼竿/钩锁
+  _onLeftUp() {
+    if (!this.charging) return;
+    const charge = Math.min(1, this.charging.t / 1.0); // 蓄力 1 秒满
+    const type = this.charging.type;
+    this.charging = null;
+    if (type === 'fishing_rod') this._useFishingRod(charge);
+    else if (type === 'hook_lock') this._throwHook(charge);
   }
 
   _forward() {
@@ -161,11 +201,11 @@ export class Game {
     return n;
   }
 
-  // 🎣 鱼竿：抛竿 → 等待 → 钓上随机物品
-  _useFishingRod() {
+  // 🎣 鱼竿：左键蓄力后抛出，蓄力越久抛得越远；等待后钓上随机的鱼
+  _useFishingRod(charge = 0) {
     if (this.fishing) return;
     const fwd = this._forward();
-    const target = this.player.pos.clone().add(fwd.multiplyScalar(9));
+    const target = this.player.pos.clone().add(fwd.multiplyScalar(5 + charge * 10));
     target.y = 0.2;
     this.bobber.position.copy(target);
     this.bobber.visible = true;
@@ -184,7 +224,7 @@ export class Game {
     pos.setXYZ(1, this.bobber.position.x, this.bobber.position.y, this.bobber.position.z);
     pos.needsUpdate = true;
     if (this.fishing.timer >= this.fishing.duration) {
-      const lootPool = ['apple', 'banana', 'orange', 'plastic', 'rope', 'lumber'];
+      const lootPool = ['fish_small', 'bass', 'pufferfish', 'salmon', 'tuna'];
       const loot = lootPool[Math.floor(Math.random() * lootPool.length)];
       this.inventory.add(loot, 1);
       this.ui.refreshCounts();
@@ -196,15 +236,120 @@ export class Game {
     }
   }
 
-  // ⚓ 铁钩：把 18m 内最近的漂浮物钩到面前
-  _useHook() {
-    const item = this._nearestItemWithin(18, false);
-    if (!item) { this._flash('⚓ 附近没有可钩的漂浮物', 1.5); return; }
-    const fwd = this._forward();
-    const p = this.player.pos.clone().add(fwd.multiplyScalar(2));
-    item.mesh.position.set(p.x, 0.3, p.z);
-    this._flash(`⚓ 钩回了 ${ITEMS[item.type].name}`, 1.5);
-    this.toolCooldown = 1.0;
+  // 🪝 钩锁：左键蓄力后抛出，沿玩家视角（含俯仰）做抛物线飞出；
+  // 飞行中碰到漂浮物即钩住（取消碰撞），落到海面时开始拉回，最终全部直接收入背包。
+  _throwHook(charge = 0) {
+    if (this.hook && this.hook.active) return;
+    const dir = this.camera.getWorldDirection(new THREE.Vector3()).normalize(); // 含玩家垂直朝向
+    const speed = (16 + charge * 18) * CFG.hookForce; // 蓄力越久抛得越远；hookForce 等比缩放总力度
+    this.hook = {
+      active: true,
+      phase: 'flying',                       // flying → pulling → (retract)
+      dir: dir.clone(),
+      vel: dir.clone().multiplyScalar(speed),// 初速度（抛物线）
+      pos: this.camera.position.clone().add(dir.clone().multiplyScalar(0.6)),
+      gravity: 18,
+      traveled: 0,
+      maxDist: 6 + charge * 18,              // 安全上限：飞太远则拉回
+      flightTime: 0,
+      items: [],
+      pulled: 0,
+    };
+    this._hookMesh.visible = true;
+    this.hookLine.visible = true;
+    this._flash('🪝 抛出钩锁…', 0.5);
+  }
+
+  _hookItem(it) {
+    it.pulling = true;          // 暂停自身漂移（Resources.update 跳过）
+    it.collideDisabled = true;  // 取消碰撞
+    this.hook.items.push(it);
+  }
+
+  _syncHooked() {
+    const h = this.hook;
+    for (let i = 0; i < h.items.length; i++) {
+      const back = h.dir.clone().multiplyScalar(-(0.9 + i * 0.7));
+      const it = h.items[i];
+      it.mesh.position.x = h.pos.x + back.x;
+      it.mesh.position.z = h.pos.z + back.z;
+    }
+  }
+
+  _updateHook(dt, t) {
+    const h = this.hook;
+    if (!h || !h.active) return;
+
+    if (h.phase === 'flying') {
+      // 抛物线：初速度受重力影响，方向已含玩家俯仰（垂直朝向）
+      h.vel.y -= h.gravity * dt;
+      h.pos.add(h.vel.clone().multiplyScalar(dt));
+      h.traveled += h.vel.length() * dt;
+      h.flightTime += dt;
+      this._hookMesh.position.copy(h.pos);
+      // 飞行中碰到漂浮物即钩住（取消其碰撞）
+      for (const it of this.resources.items) {
+        if (h.items.includes(it) || it.pulling) continue;
+        if (it.mesh.position.distanceTo(h.pos) < 1.3) {
+          this._hookItem(it);
+          this._flash(`🪝 钩住了 ${ITEMS[it.type].name}`, 1.0);
+          h.phase = 'pulling';
+          break;
+        }
+      }
+      // 落到海面 → 才开始拉回（只有碰到海平面才收回）
+      const seaY = this.ocean.surfaceY(h.pos.x, h.pos.z, t);
+      if (h.pos.y <= seaY + 0.1) {
+        h.pos.y = seaY + 0.1;
+        h.phase = 'pulling';
+      }
+    } else if (h.phase === 'pulling') {
+      const pullTarget = this.player.pos.clone().add(this._forward().multiplyScalar(1.5));
+      pullTarget.y = this.ocean.surfaceY(pullTarget.x, pullTarget.z, t); // 收回到海平面，而非直飞相机位置
+      h.pos.lerp(pullTarget, Math.min(1, dt * 4));
+      this._hookMesh.position.copy(h.pos);
+      // 拉回途中钩住路径上/附近的其他漂浮物
+      for (const it of this.resources.items) {
+        if (h.items.includes(it) || it.pulling) continue;
+        let near = it.mesh.position.distanceTo(h.pos) < 1.3;
+        if (!near) {
+          for (const hi of h.items) {
+            if (it.mesh.position.distanceTo(hi.mesh.position) < 1.6) { near = true; break; }
+          }
+        }
+        if (near) { this._hookItem(it); this._flash(`🪝 又钩住了 ${ITEMS[it.type].name}`, 1.0); }
+      }
+      this._syncHooked();
+      h.pulled += dt;
+      if (h.pos.distanceTo(pullTarget) < 0.4 || h.pulled > 1.5) this._finishHook();
+    } else if (h.phase === 'retract') {
+      const pullTarget = this.player.pos.clone();
+      pullTarget.y = this.ocean.surfaceY(pullTarget.x, pullTarget.z, t);
+      h.pos.lerp(pullTarget, Math.min(1, dt * 6));
+      this._hookMesh.position.copy(h.pos);
+      if (h.pos.distanceTo(pullTarget) < 0.4) this._finishHook();
+    }
+
+    const lp = this.hookLine.geometry.attributes.position;
+    lp.setXYZ(0, this.camera.position.x, this.camera.position.y - 0.3, this.camera.position.z);
+    lp.setXYZ(1, h.pos.x, h.pos.y, h.pos.z);
+    lp.needsUpdate = true;
+  }
+
+  _finishHook() {
+    const h = this.hook;
+    const n = h.items.length;
+    for (const it of h.items) {
+      if (this.resources.items.includes(it)) this.resources.collect(it); // 直接放入背包
+    }
+    h.items = [];
+    h.active = false;
+    h.phase = 'idle';
+    this._hookMesh.visible = false;
+    this.hookLine.visible = false;
+    this.ui.refreshCounts();
+    this._flash(n > 0 ? `🪝 收回钩锁，获得 ${n} 件物品` : '🪝 钩锁空手而归', 1.5);
+    this.toolCooldown = 0.8;
   }
 
   // 🕸️ 渔网：网住 7m 内所有漂浮物
@@ -255,18 +400,31 @@ export class Game {
     // 钓鱼浮漂与目标同步
     if (this.bobber.visible) { this.bobber.position.x -= dx; this.bobber.position.z -= dz; }
     if (this.fishing) { this.fishing.target.x -= dx; this.fishing.target.z -= dz; }
+    if (this.hook && this.hook.active) {
+      this.hook.pos.x -= dx; this.hook.pos.z -= dz;
+      for (const it of this.hook.items) { it.mesh.position.x -= dx; it.mesh.position.z -= dz; }
+    }
 
     // 玩家回到中心
     this.player.pos.x -= dx; this.player.pos.z -= dz;
 
   }
 
-  _tryCollect() {
-    const near = this.resources.nearest(this.player.pos);
-    if (near) {
-      this.resources.collect(near);
-      this.ui.refreshCounts();
+  // 右键：拾取「瞄准（视角前方）且近距离」的漂浮物
+  _tryPickup() {
+    const fwd = this._forward();
+    let best = null, bestD = 3.0;
+    for (const it of this.resources.items) {
+      const to = it.mesh.position.clone().sub(this.player.pos);
+      const d = to.length();
+      if (d > 3.0) continue;
+      to.normalize();
+      if (to.dot(fwd) < 0.5) continue; // 必须在视角前方（已瞄准）
+      if (d < bestD) { bestD = d; best = it; }
     }
+    if (!best) { this._flash('未瞄准可拾取的漂浮物', 1.0); return; }
+    this.resources.collect(best);
+    this.ui.refreshCounts();
   }
 
   _tryBuild() {
@@ -334,7 +492,14 @@ export class Game {
     this.resources.update(dt, this.player.pos, t);
 
     if (this.toolCooldown > 0) this.toolCooldown -= dt;
+    if (this.charging) {
+      this.charging.t += dt; // 蓄力计时
+      this.ui.setCharge(Math.min(1, this.charging.t / 1.0));
+    } else {
+      this.ui.setCharge(null);
+    }
     this._updateFishing(dt);
+    this._updateHook(dt, t);
 
     // 建造预览：若玩家所在格有相邻空格且买得起，显示幽灵格
     const cell = this.raft.nearestEmptyNeighbor(this.player.pos.x, this.player.pos.z);
@@ -355,7 +520,7 @@ export class Game {
       prompt = this.toolMsg;
     } else {
       const near = this.resources.nearest(this.player.pos);
-      if (near) prompt = `按 E 拾取 ${this._label(near.type)}`;
+      if (near) prompt = `右键 拾取 ${this._label(near.type)}`;
       else if (this.ghost.visible) prompt = '左键 扩建木筏 (2 木材)';
     }
     this.ui.setPrompt(prompt);
