@@ -73,12 +73,13 @@ export class Resources {
       spawnAng = Math.random() * Math.PI * 2; // 木筏四周任意方向
       dist = CFG.startSpawnMin + Math.random() * (CFG.startSpawnMax - CFG.startSpawnMin);
     } else {
-      // 生成方向（弧）取"玩家相对移动方向"的前方 ±90°：玩家移动时物品会从前方迎面漂来
-      let ref;
-      if (this.playerVel.lengthSq() > 0.04) ref = this.playerVel.clone().setY(0).normalize();
-      else ref = this.current.clone(); // 静止时退化为洋流方向
-      const ang = Math.atan2(ref.z, ref.x);
-      spawnAng = ang + (Math.random() - 0.5) * Math.PI; // 玩家前进方向 ±90° 内
+      // 生成方向：移动时取玩家前方 ±90°（迎面漂来）；静止时四周随机，保持环境始终充实
+      if (this.playerVel.lengthSq() > 0.04) {
+        const ang = Math.atan2(this.playerVel.z, this.playerVel.x);
+        spawnAng = ang + (Math.random() - 0.5) * Math.PI;
+      } else {
+        spawnAng = Math.random() * Math.PI * 2; // 静止时四周都生成
+      }
       const vd = CFG.viewDist;
       const spawnMin = vd + 4, spawnMax = vd + 22; // 视野外生成环（实时跟随视野）
       dist = spawnMin + Math.random() * (spawnMax - spawnMin);
@@ -278,11 +279,11 @@ export class Resources {
     }
     for (const it of toRemove) this._despawn(it);
 
-    // 维持场上资源数量（漂出视野会销毁，这里持续补充）
+    // 维持场上资源数量（漂出视野会销毁，这里持续补充），让游玩中感觉源源不断
     this.spawnTimer += dt;
-    if (this.spawnTimer > CFG.spawnInterval) {
+    if (this.spawnTimer >= CFG.spawnInterval) {
       this.spawnTimer = 0;
-      if (this.items.length < 16) this.spawn();
+      if (this.items.length < CFG.maxItems) this.spawn();
     }
   }
 
