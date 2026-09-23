@@ -13,10 +13,11 @@ export const CFG = {
   floatSpeedMin: 1.0,   // 漂浮物漂移速度下限
   floatSpeedMax: 2.0,   // 漂浮物漂移速度上限
   hookForce: 0.5,       // 钩锁抛出总力度倍率（等比缩放抛出速度）
-  viewDist: 110,        // 视野距离（影响相机远裁剪 / 雾 / 资源生成环）
-  startCount: 14,       // 开局漂浮物数量（生成在木筏附近）
+  viewDist: 75,        // 视野距离（影响相机远裁剪 / 雾 / 资源生成环）
+  startCount: 7,       // 开局漂浮物数量（生成在木筏附近）
   startSpawnMin: 6,     // 开局生成环：距木筏最近距离
   startSpawnMax: 30,    // 开局生成环：距木筏最远距离
-  spawnInterval: 1.5,   // 漂浮物持续生成间隔（秒），越小生成越快
+  spawnInterval: 1.0,   // 漂浮物持续生成间隔（秒），越小生成越快
+  maxItems: 50,         // 场上漂浮物数量上限（达到则暂停生成，营造源源不断之感）
   Debug: false,         // 调试模式：漂浮物就近生成且不移动、木筏不漂移；面板随此开关显隐
 };
