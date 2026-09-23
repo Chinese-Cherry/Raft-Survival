@@ -8,6 +8,7 @@ import { Resources } from './Resources.js';
 import { UI } from './UI.js';
 import { ITEMS } from './Items.js';
 import { CFG } from './let.js';
+import { buildPlayerModel } from '../models/player/player.js';
 
 // 游戏主控：装配场景/渲染器/光照，组织各子系统并驱动主循环与交互。
 export class Game {
@@ -43,6 +44,12 @@ export class Game {
     this.crafting = new Crafting(this.inventory, (r) => this.onCraft(r));
     this.player = new Player(this.camera, this.canvas, this.raft);
     this.resources = new Resources(this.scene, this.ocean, this.raft, this.inventory, this.viewDist, foodModels);
+    // 玩家可见模型：第三人称显示完整人形；第一人称显示挂在相机下的手臂视角
+    this.playerModel = buildPlayerModel();
+    this.scene.add(this.playerModel.group);
+    this.scene.add(this.camera);            // 让挂在相机下的第一人称手臂可被渲染
+    this.camera.add(this.playerModel.fp);
+    this.thirdPerson = false;
     this.ui = new UI(this.inventory, this.crafting, this);
 
     this._setupBuildGhost();
@@ -116,6 +123,9 @@ export class Game {
   }
 
   _bindInteractions() {
+    document.addEventListener('keydown', (e) => {
+      if (e.code === 'KeyV') this.thirdPerson = !this.thirdPerson; // 切换第一/三人称
+    });
     document.addEventListener('mousedown', (e) => {
       if (this.ui.openPanel) return;
       if (e.button === 0) this._onLeftDown();  // 左键：使用道具（鱼竿/钩锁蓄力） / 建造
@@ -204,6 +214,7 @@ export class Game {
   // 🎣 鱼竿：左键蓄力后抛出，蓄力越久抛得越远；等待后钓上随机的鱼
   _useFishingRod(charge = 0) {
     if (this.fishing) return;
+    this.playerModel?.playUse();
     const fwd = this._forward();
     const target = this.player.pos.clone().add(fwd.multiplyScalar(5 + charge * 10));
     target.y = 0.2;
@@ -240,14 +251,16 @@ export class Game {
   // 飞行中碰到漂浮物即钩住（取消碰撞），落到海面时开始拉回，最终全部直接收入背包。
   _throwHook(charge = 0) {
     if (this.hook && this.hook.active) return;
+    this.playerModel?.playUse();
     const dir = this.camera.getWorldDirection(new THREE.Vector3()).normalize(); // 含玩家垂直朝向
     const speed = (16 + charge * 18) * CFG.hookForce; // 蓄力越久抛得越远；hookForce 等比缩放总力度
+    const hand = this.playerModel.getHandWorld('right', new THREE.Vector3(), !this.thirdPerson);
     this.hook = {
       active: true,
       phase: 'flying',                       // flying → pulling → (retract)
       dir: dir.clone(),
       vel: dir.clone().multiplyScalar(speed),// 初速度（抛物线）
-      pos: this.camera.position.clone().add(dir.clone().multiplyScalar(0.6)),
+      pos: hand.add(dir.clone().multiplyScalar(0.3)), // 从右手抛出
       gravity: 18,
       traveled: 0,
       maxDist: 6 + charge * 18,              // 安全上限：飞太远则拉回
@@ -304,8 +317,7 @@ export class Game {
         h.phase = 'pulling';
       }
     } else if (h.phase === 'pulling') {
-      const pullTarget = this.player.pos.clone().add(this._forward().multiplyScalar(1.5));
-      pullTarget.y = this.ocean.surfaceY(pullTarget.x, pullTarget.z, t); // 收回到海平面，而非直飞相机位置
+      const pullTarget = this.playerModel.getHandWorld('right', new THREE.Vector3(), !this.thirdPerson);
       h.pos.lerp(pullTarget, Math.min(1, dt * 4));
       this._hookMesh.position.copy(h.pos);
       // 拉回途中钩住路径上/附近的其他漂浮物
@@ -323,15 +335,15 @@ export class Game {
       h.pulled += dt;
       if (h.pos.distanceTo(pullTarget) < 0.4 || h.pulled > 1.5) this._finishHook();
     } else if (h.phase === 'retract') {
-      const pullTarget = this.player.pos.clone();
-      pullTarget.y = this.ocean.surfaceY(pullTarget.x, pullTarget.z, t);
+      const pullTarget = this.playerModel.getHandWorld('right', new THREE.Vector3(), !this.thirdPerson);
       h.pos.lerp(pullTarget, Math.min(1, dt * 6));
       this._hookMesh.position.copy(h.pos);
       if (h.pos.distanceTo(pullTarget) < 0.4) this._finishHook();
     }
 
     const lp = this.hookLine.geometry.attributes.position;
-    lp.setXYZ(0, this.camera.position.x, this.camera.position.y - 0.3, this.camera.position.z);
+    const handLine = this.playerModel.getHandWorld('right', new THREE.Vector3(), !this.thirdPerson);
+    lp.setXYZ(0, handLine.x, handLine.y, handLine.z);
     lp.setXYZ(1, h.pos.x, h.pos.y, h.pos.z);
     lp.needsUpdate = true;
   }
@@ -356,6 +368,7 @@ export class Game {
   _useNet() {
     const caught = this._collectWithin(7);
     if (caught === 0) { this._flash('🕸️ 网里空空如也', 1.5); return; }
+    this.playerModel?.playUse();
     this.ui.refreshCounts();
     this._flash(`🕸️ 一网打尽，收获 ${caught} 件`, 2.0);
     this.toolCooldown = 4.0;
@@ -366,6 +379,7 @@ export class Game {
     const item = this._nearestItemWithin(6, true);
     if (!item) { this._flash('🔱 前方没有目标', 1.5); return; }
     this.resources.collect(item);
+    this.playerModel?.playUse();
     this.ui.refreshCounts();
     this._flash(`🔱 叉中了 ${ITEMS[item.type].name}`, 1.5);
     this.toolCooldown = 0.8;
@@ -490,6 +504,24 @@ export class Game {
     const frozen = this.ui.openPanel !== null;
     this.player.update(dt, this.ocean, t, frozen);
     this.resources.update(dt, this.player.pos, t);
+
+    // 玩家可见模型：跟随玩家（脚底对齐），朝向 = yaw
+    const p = this.player;
+    const moving = !frozen && (p.keys['KeyW'] || p.keys['KeyA'] || p.keys['KeyS'] || p.keys['KeyD']);
+    this.playerModel.group.position.set(p.pos.x, p.pos.y - p.eye, p.pos.z);
+    this.playerModel.group.rotation.y = p.yaw;
+    this.playerModel.group.visible = this.thirdPerson;  // 第三人称：完整人形
+    this.playerModel.fp.visible = !this.thirdPerson;     // 第一人称：屏幕双手
+    this.playerModel.update(dt, { moving });
+    this.playerModel.fpUpdate();
+    // 第三人称：相机退到玩家身后俯视
+    if (this.thirdPerson) {
+      const y = p.yaw;
+      const back = new THREE.Vector3(Math.sin(y), 0, Math.cos(y));
+      const dist = 5;
+      this.camera.position.set(p.pos.x + back.x * dist, p.pos.y + 0.8, p.pos.z + back.z * dist);
+      this.camera.lookAt(p.pos.x, p.pos.y - 0.3, p.pos.z);
+    }
 
     if (this.toolCooldown > 0) this.toolCooldown -= dt;
     if (this.charging) {
