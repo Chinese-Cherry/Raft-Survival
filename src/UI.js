@@ -40,6 +40,15 @@ export class UI {
       if (/^Digit[1-9]$/.test(e.code) && !this.openPanel) this.selectSlot(+e.code.slice(5) - 1);
     });
 
+    // 滚轮循环切换快捷栏选中格（面板打开时不切换）
+    document.addEventListener("wheel", (e) => {
+      if (this.openPanel) return;
+      e.preventDefault();
+      const dir = e.deltaY > 0 ? 1 : -1;
+      const next = (this.activeSlot + dir + HOTBAR_SIZE) % HOTBAR_SIZE;
+      this.selectSlot(next);
+    }, { passive: false });
+
     this.renderRecipes();
     this.renderBackpack();
     this.renderHotbar();
