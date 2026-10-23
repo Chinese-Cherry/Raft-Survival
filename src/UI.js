@@ -61,9 +61,13 @@ export class UI {
     if (!slot) return `<div class="${cls}" data-idx="${idx}">${num}</div>`;
     const def = ITEMS[slot.id];
     const cnt = slot.n > 1 ? `<span class="cnt">${slot.n}</span>` : "";
+    // icon 为图片路径（含扩展名）时渲染 <img>，否则按原 emoji 文本显示
+    const ico = /\.(png|jpe?g|gif|webp)$/i.test(def.icon)
+      ? `<img class="ico" src="${def.icon}" alt="${def.name}">`
+      : `<span class="ico">${def.icon}</span>`;
     return `<div class="${cls}" data-idx="${idx}" title="${def.name}">
       ${num}
-      <span class="ico">${def.icon}</span>
+      ${ico}
       <span class="nm">${def.name}</span>
       ${cnt}
     </div>`;
@@ -122,10 +126,13 @@ export class UI {
   setEquipped(id) {
     if (!id) { this.elEquipped.style.display = "none"; return; }
     const def = ITEMS[id];
-    const hint = (id === 'hook_lock' || id === 'fishing_rod') ? '左键蓄力抛出' : '左键 使用';
+    const hint = (id === 'hook_lock' || id === 'fishing_rod') ? '左键蓄力抛出'
+               : (id === 'build_hammer') ? '左键 建造'
+               : '左键 使用';
     this.elEquipped.style.display = "block";
+    // 装备提示只显示文字，避免图片以原始尺寸撑大遮挡游玩画面
     this.elEquipped.innerHTML =
-      `<span class="key">[已装备]</span>${def.icon} ${def.name}　<span style="opacity:.6">${hint}</span>`;
+      `<span class="key">[已装备]</span>${def.name}　<span style="opacity:.6">${hint}</span>`;
   }
 
   // 蓄力条：p 为 0~1 的进度；传 null 隐藏。
@@ -162,7 +169,10 @@ export class UI {
   toggleBackpack() { this._openPanel('backpack'); }
 
   renderRecipes() {
-    this.elRecipes.innerHTML = this.crafting.recipes
+    // 手持建造锤时只显示木筏建筑配方；反之只显示道具/材料配方
+    const structMode = this.game.equipped === 'build_hammer';
+    const list = this.crafting.recipes.filter((r) => (r.structural === true) === structMode);
+    this.elRecipes.innerHTML = list
       .map((r) => {
         const ok = this.crafting.canCraft(r);
         const cost = Object.entries(r.cost)
@@ -177,7 +187,13 @@ export class UI {
 
     this.elRecipes.querySelectorAll(".recipe").forEach((el) => {
       el.addEventListener("click", () => {
-        this.crafting.craft(el.dataset.id);
+        const r = this.crafting.recipes.find((x) => x.id === el.dataset.id);
+        if (!this.crafting.canCraft(r)) {
+          // 木筏类建筑（含渔网）材料不足时统一提示"无法建造"
+          this.setPrompt(r.structural ? '无法建造（材料不足）' : '材料不足，无法合成');
+          return;
+        }
+        this.crafting.craft(r.id);
         this.refreshCounts();
       });
     });

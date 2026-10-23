@@ -120,6 +120,10 @@ export class Game {
     );
     this.hookLine.visible = false;
     this.scene.add(this.hookLine);
+
+    // 木筏建筑：已放置的渔网列表 + 自动收集计时
+    this.placedNets = [];
+    this.netTimer = 0;
   }
 
   _bindInteractions() {
@@ -148,20 +152,19 @@ export class Game {
     this.ui.setEquipped(id);
   }
 
-  // 鱼竿/钩锁走蓄力抛出流程（左键按下蓄力、松开抛出），这里只处理瞬时道具
+  // 鱼竿/钩锁走蓄力抛出流程（左键按下蓄力、松开抛出）；建造锤由 _onLeftDown 单独处理。
   _useTool() {
     if (!this.equipped) { this.ui.setPrompt('未装备道具：按数字键选中快捷栏道具'); return; }
     if (this.toolCooldown > 0) return;
+    // 渔网已改为木筏建筑，不再作为即时道具使用；此处保留以兼容其它瞬时道具。
     switch (this.equipped) {
-      case 'net':   this._useNet(); break;
-      case 'spear': this._useSpear(); break;
     }
   }
 
-  // 左键按下：装备了蓄力类道具则开始蓄力，否则立即使用；空手则建造
+  // 左键按下：建造锤——建造；鱼竿/钩锁——蓄力抛出；其它道具——立即使用
   _onLeftDown() {
     if (!this.player.locked) return;
-    if (!this.equipped) { this._tryBuild(); return; }
+    if (this.equipped === 'build_hammer') { this._tryBuild(); return; }
     if (this.toolCooldown > 0) return;
     if (this.equipped === 'fishing_rod' || this.equipped === 'hook_lock') {
       this.charging = { type: this.equipped, t: 0 };
@@ -198,17 +201,6 @@ export class Game {
       if (d < bestD) { bestD = d; best = it; }
     }
     return best;
-  }
-
-  _collectWithin(radius) {
-    let n = 0;
-    for (const it of this.resources.items.slice()) {
-      if (it.mesh.position.distanceTo(this.player.pos) <= radius) {
-        this.resources.collect(it);
-        n++;
-      }
-    }
-    return n;
   }
 
   // 🎣 鱼竿：左键蓄力后抛出，蓄力越久抛得越远；等待后钓上随机的鱼
@@ -364,27 +356,6 @@ export class Game {
     this.toolCooldown = 0.8;
   }
 
-  // 🕸️ 渔网：网住 7m 内所有漂浮物
-  _useNet() {
-    const caught = this._collectWithin(7);
-    if (caught === 0) { this._flash('🕸️ 网里空空如也', 1.5); return; }
-    this.playerModel?.playUse();
-    this.ui.refreshCounts();
-    this._flash(`🕸️ 一网打尽，收获 ${caught} 件`, 2.0);
-    this.toolCooldown = 4.0;
-  }
-
-  // 🔱 鱼叉：戳前方 6m 内单个漂浮物（预留敌人判定）
-  _useSpear() {
-    const item = this._nearestItemWithin(6, true);
-    if (!item) { this._flash('🔱 前方没有目标', 1.5); return; }
-    this.resources.collect(item);
-    this.playerModel?.playUse();
-    this.ui.refreshCounts();
-    this._flash(`🔱 叉中了 ${ITEMS[item.type].name}`, 1.5);
-    this.toolCooldown = 0.8;
-  }
-
   _flash(msg, time) {
     this.toolMsg = msg;
     this.toolMsgTimer = time;
@@ -456,11 +427,18 @@ export class Game {
 
   onCraft(recipe) {
     if (recipe.structural) {
+      // 所有木筏建筑（木筏格子/木墙/渔网/船帆）均需手持建造锤方可放置
+      if (this.equipped !== 'build_hammer') {
+        this.ui.setPrompt('需手持建造锤才能建造');
+        return;
+      }
       if (recipe.id === 'tile') {
         const cell = this.raft.nearestEmptyNeighbor(this.player.pos.x, this.player.pos.z);
         if (cell) this.raft.addTile(cell[0], cell[1]);
       } else if (recipe.id === 'wall') {
         this._placeWall();
+      } else if (recipe.id === 'net') {
+        this._placeNet();
       } else if (recipe.id === 'sail') {
         this.raft.addSail();
       }
@@ -481,6 +459,40 @@ export class Game {
     wall.position.set(wx, 0.8, wz);
     wall.castShadow = true;
     this.raft.group.add(wall);
+  }
+
+  // 渔网作为木筏建筑：放置在玩家当前所在格，挂在 raft.group 下随木筏一起漂移，
+  // 并在主循环中自动收集附近漂浮物（见 _updateNets）。
+  _placeNet() {
+    const [gx, gz] = this.raft.worldToGrid(this.player.pos.x, this.player.pos.z);
+    const [lx, lz] = this.raft.gridToLocal(gx, gz);
+    const net = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.9, 0.9, 0.25, 16),
+      new THREE.MeshStandardMaterial({ color: 0xeeeeee, roughness: 1, transparent: true, opacity: 0.75 })
+    );
+    net.position.set(lx, 0.15, lz);
+    net.castShadow = true;
+    this.raft.group.add(net);
+    this.placedNets.push(net);
+  }
+
+  // 木筏上的渔网定期自动收集半径内的漂浮物
+  _updateNets(dt) {
+    if (this.placedNets.length === 0) return;
+    this.netTimer -= dt;
+    if (this.netTimer > 0) return;
+    this.netTimer = 1.5; // 每 1.5 秒收集一次
+    const R = 6, R2 = R * R;
+    let got = 0;
+    for (const net of this.placedNets) {
+      const wx = this.raft.group.position.x + net.position.x;
+      const wz = this.raft.group.position.z + net.position.z;
+      for (const it of this.resources.items.slice()) {
+        const dx = it.mesh.position.x - wx, dz = it.mesh.position.z - wz;
+        if (dx * dx + dz * dz <= R2) { this.resources.collect(it); got++; }
+      }
+    }
+    if (got > 0) { this.ui.refreshCounts(); this._flash(`🕸️ 渔网收集到 ${got} 件`, 1.2); }
   }
 
   _resize() {
@@ -532,12 +544,15 @@ export class Game {
     }
     this._updateFishing(dt);
     this._updateHook(dt, t);
+    this._updateNets(dt);
 
-    // 建造预览：若玩家所在格有相邻空格且买得起，显示幽灵格
+    // 建造预览：手持建造锤且有可扩建相邻空格时显示幽灵格（无论材料是否足够）
     const cell = this.raft.nearestEmptyNeighbor(this.player.pos.x, this.player.pos.z);
-    if (cell && this.inventory.has('lumber', 2)) {
+    if (cell && this.equipped === 'build_hammer') {
       const [wx, wz] = this.raft.gridToWorld(cell[0], cell[1]);
       this.ghost.position.set(wx, 0, wz);
+      // 材料足够为绿色，不足为红色
+      this.ghost.material.color.set(this.inventory.has('lumber', 2) ? 0x00ff88 : 0xff4444);
       this.ghost.visible = true;
     } else {
       this.ghost.visible = false;
@@ -552,8 +567,14 @@ export class Game {
       prompt = this.toolMsg;
     } else {
       const near = this.resources.nearest(this.player.pos);
-      if (near) prompt = `右键 拾取 ${this._label(near.type)}`;
-      else if (this.ghost.visible) prompt = '左键 扩建木筏 (2 木材)';
+      if (near) {
+        prompt = `右键 拾取 ${this._label(near.type)}`;
+      } else if (this.equipped === 'build_hammer' && cell) {
+        // 手持建造锤并选中木筏（含渔网等建筑）的可建造位置时提示，材料不足给出反馈
+        prompt = this.inventory.has('lumber', 2)
+          ? '左键 扩建木筏 (2 木材)'
+          : '无法建造（缺少木材）';
+      }
     }
     this.ui.setPrompt(prompt);
 

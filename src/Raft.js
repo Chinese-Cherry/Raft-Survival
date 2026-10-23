@@ -38,8 +38,8 @@ export class Raft {
     const geo = new THREE.BoxGeometry(TILE * 0.99, 0.3, TILE * 0.99);
     const mat = new THREE.MeshStandardMaterial({ color: 0x8a5a2b, roughness: 0.9 });
     const m = new THREE.Mesh(geo, mat);
-    const [wx, wz] = this.gridToWorld(gx, gz);
-    m.position.set(wx, -0.15, wz);
+    const [lx, lz] = this.gridToLocal(gx, gz);
+    m.position.set(lx, -0.15, lz);
     m.receiveShadow = true;
     m.castShadow = true;
     this.group.add(m);
