@@ -2,11 +2,11 @@
 // 删除测试代码时：保留本文件即可（它是正式参数来源），只删 src/Debug.js 与 main.js 中的调用。
 
 // 漂浮物类型键（与 Resources.TYPES 对应），用于按类型缩放
-export const FLOAT_TYPES = ['plastic', 'rope', 'lumber', 'apple', 'banana', 'orange', 'leaf'];
+export const FLOAT_TYPES = ['plastic', 'lumber', 'apple', 'banana', 'orange', 'leaf'];
 
 export const CFG = {
   floatScale: {         // 各漂浮物的单独缩放倍率（按类型）
-    plastic: 1.0, rope: 1.1, lumber: 1.0, apple: 0.2, banana: 0.3, orange: 0.2, leaf: 0.1,
+    plastic: 1.0, lumber: 1.0, apple: 0.2, banana: 0.3, orange: 0.2, leaf: 0.1,
   },
   raftDriftSpeed: 2.2,  // 木筏无帆漂移速度
   raftSailSpeed: 4.0,   // 木筏有帆航行速度
