@@ -5,9 +5,10 @@ export class Crafting {
     this.onCraft = onCraft; // (recipe) => void
     this.recipes = [
       // structural=true 的配方不产出物品，而是触发建造逻辑（需手持建造锤）
-      { id: 'tile', name: '木筏格子', cost: { lumber: 2 },          desc: '扩建木筏', structural: true },
+      // place=true 的配方在合成菜单选中后进入建造模式（显示幽灵格），左键放置时才扣料
+      { id: 'tile', name: '木筏格子', cost: { lumber: 2 },          desc: '扩建木筏', structural: true, place: true },
       { id: 'wall', name: '木墙',     cost: { lumber: 3, rope: 1 },  desc: '防御结构', structural: true },
-      { id: 'sail', name: '船帆',     cost: { lumber: 4, rope: 2 },  desc: '可操作航行：转动视角掌舵', structural: true },
+      { id: 'sail', name: '船帆',     cost: { lumber: 4, rope: 2 },  desc: '可操作航行：右键船帆开关/调向', structural: true, place: true },
       { id: 'net',  name: '渔网',     cost: { rope: 3 },             desc: '木筏建筑：自动收集附近漂浮物', structural: true },
       // 产出类配方
       { id: 'build_hammer', name: '建造锤', cost: { lumber: 3, rope: 2 }, output: { id: 'build_hammer', n: 1 }, desc: '手持方可建造木筏' },

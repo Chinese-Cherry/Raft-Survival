@@ -14,6 +14,10 @@ export class UI {
     this.elRecipes = document.getElementById("recipe-list");
     this.elBackpack = document.getElementById("backpack");
     this.elBackpackGrid = document.getElementById("backpack-grid");
+    this.elSail = document.getElementById("sail-panel");
+    this.elSailState = document.getElementById("sail-state");
+    this.elSailToggle = document.getElementById("sail-toggle");
+    this.elSailClose = document.getElementById("sail-close");
     this.elHotbar = document.getElementById("hotbar");
     this.elEquipped = document.getElementById("equipped");
     this.elCharge = document.getElementById("charge");
@@ -21,7 +25,18 @@ export class UI {
     this.elOverlay = document.getElementById("overlay");
     this.elApp = document.getElementById("app");
 
-    this.openPanel = null; // 当前打开的面板：'crafting' | 'backpack' | null
+    this.openPanel = null; // 当前打开的面板：'crafting' | 'backpack' | 'sail' | null
+
+    // 船帆互动面板：开/收帆、转向
+    this.elSailToggle.addEventListener("click", () => {
+      this.game.toggleSail();
+      this.renderSail();
+    });
+    document.getElementById("sail-set").addEventListener("click", () => {
+      // 关闭面板后进入“转动视角定航向”模式，玩家确认时才固定方向
+      this.game.beginSailAim();
+    });
+    this.elSailClose.addEventListener("click", () => this._closePanels());
 
     this.elOverlay.addEventListener("click", () => {
       if (this.openPanel) return;
@@ -127,7 +142,7 @@ export class UI {
     if (!id) { this.elEquipped.style.display = "none"; return; }
     const def = ITEMS[id];
     const hint = (id === 'hook_lock' || id === 'fishing_rod') ? '左键蓄力抛出'
-               : (id === 'build_hammer') ? '左键 建造'
+               : (id === 'build_hammer') ? '合成菜单选择建筑后放置'
                : '左键 使用';
     this.elEquipped.style.display = "block";
     // 装备提示只显示文字，避免图片以原始尺寸撑大遮挡游玩画面
@@ -147,9 +162,15 @@ export class UI {
   _openPanel(which) {
     if (this.openPanel && this.openPanel !== which) return; // 另一个面板已开，禁止打开
     if (this.openPanel === which) { this._closePanels(); return; } // 再次按下则关闭
+    if (this.game.aimingSail) this.game.cancelSailAim(); // 打开任意面板时退出定航向模式
     if (which === 'crafting') {
+      this.game.cancelBuild(); // 重新打开合成菜单时退出建造模式（幽灵格隐藏）
       this.elCraft.style.display = 'block';
       this.renderRecipes();
+    } else if (which === 'sail') {
+      this.game.cancelBuild(); // 打开船帆面板时同时退出建造模式
+      this.renderSail();
+      this.elSail.style.display = 'block';
     } else {
       this.elBackpack.style.display = 'block';
       this.renderBackpack();
@@ -161,12 +182,34 @@ export class UI {
   _closePanels() {
     this.elCraft.style.display = 'none';
     this.elBackpack.style.display = 'none';
+    if (this.elSail) this.elSail.style.display = 'none';
     this.openPanel = null;
     this.game.player.requestLock(); // 全部关闭后重新锁定指针
   }
 
+  // 供 Game 在 Esc / 代码中关闭面板
+  closePanels() {
+    if (this.openPanel) this._closePanels();
+  }
+
   toggleCrafting() { this._openPanel('crafting'); }
   toggleBackpack() { this._openPanel('backpack'); }
+  toggleSailPanel() { this._openPanel('sail'); }
+
+  // 船帆面板：显示展开状态与当前固定航向
+  renderSail() {
+    const raft = this.game.raft;
+    if (!raft.hasSail) return;
+    this.elSailState.innerHTML =
+      `${raft.sailOpen ? '状态：已展开（按航向航行）' : '状态：已收起（随洋流漂移）'}<br/>` +
+      `当前航向：${this._sailHeading()}`;
+    this.elSailToggle.textContent = raft.sailOpen ? '收起船帆' : '展开船帆';
+  }
+
+  // 航向角度 → 八方位文字（0°=北，顺时针）
+  _sailHeading() {
+    return this.game._headingText(this.game.raft.sailYaw);
+  }
 
   renderRecipes() {
     // 手持建造锤时只显示木筏建筑配方；反之只显示道具/材料配方
@@ -188,6 +231,17 @@ export class UI {
     this.elRecipes.querySelectorAll(".recipe").forEach((el) => {
       el.addEventListener("click", () => {
         const r = this.crafting.recipes.find((x) => x.id === el.dataset.id);
+        if (r.place) {
+          // 选中可放置建筑：先判断能否建造，能建造才进入建造模式（幽灵格随之出现）
+          if (!this.crafting.canCraft(r)) {
+            // 用浮动提示，避免被主循环每帧刷新的 prompt 覆盖
+            this.game._flash('无法建造（材料不足）', 1.5);
+            return;
+          }
+          // 进入建造模式成功才关闭菜单；失败（如船帆已建）保留面板并给出提示
+          if (this.game.selectBuild(r.id)) this._closePanels();
+          return;
+        }
         if (!this.crafting.canCraft(r)) {
           // 木筏类建筑（含渔网）材料不足时统一提示"无法建造"
           this.setPrompt(r.structural ? '无法建造（材料不足）' : '材料不足，无法合成');

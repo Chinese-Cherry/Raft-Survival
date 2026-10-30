@@ -7,7 +7,7 @@ import { Player } from './Player.js';
 import { Resources } from './Resources.js';
 import { UI } from './UI.js';
 import { ITEMS } from './Items.js';
-import { CFG } from './let.js';
+import { CFG, START_ITEMS, START_EQUIPPED } from './let.js';
 import { buildPlayerModel } from '../models/player/player.js';
 
 // 游戏主控：装配场景/渲染器/光照，组织各子系统并驱动主循环与交互。
@@ -55,9 +55,12 @@ export class Game {
     this._setupBuildGhost();
     this._setupTools();
     this._bindInteractions();
-    // 开局默认拥有钩锁（可制作），并直接装备
-    this.inventory.add('hook_lock', 1);
-    this._equip('hook_lock');
+    // 开局默认物品与默认装备（配置见 let.js 的 START_ITEMS / START_EQUIPPED）
+    // START_ITEMS() 返回 Map，需直接迭代（Object.entries 对 Map 只会得到空数组）
+    for (const [id, n] of START_ITEMS()) {
+      if (n > 0) this.inventory.add(id, n);
+    }
+    if (START_EQUIPPED && this.inventory.has(START_EQUIPPED)) this._equip(START_EQUIPPED);
     this.ui.refreshCounts();
     this._resize();
     window.addEventListener('resize', () => this._resize());
@@ -81,7 +84,60 @@ export class Game {
     const mat = new THREE.MeshBasicMaterial({ color: 0x66ff99, transparent: true, opacity: 0.4 });
     this.ghost = new THREE.Mesh(geo, mat);
     this.ghost.visible = false;
-    this.scene.add(this.ghost);
+    // 绑定在木筏上：作为 raft.group 的子节点，随木筏一起漂移、随浪起伏
+    this.raft.group.add(this.ghost);
+
+    // 船帆幽灵模型（建造预览：桅杆 + 帆）
+    const ghostMat = new THREE.MeshBasicMaterial({
+      color: 0x66ff99, transparent: true, opacity: 0.35, side: THREE.DoubleSide,
+    });
+    this.sailGhostMat = ghostMat;
+    this.sailGhost = new THREE.Group();
+    const gmast = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 3, 8), ghostMat);
+    gmast.position.y = 1.5;
+    const gsail = new THREE.Mesh(new THREE.PlaneGeometry(1.6, 2.2), ghostMat);
+    gsail.position.y = 2.0;
+    this.sailGhost.add(gmast, gsail);
+    this.sailGhost.visible = false;
+    this.raft.group.add(this.sailGhost);
+
+    this.buildMode = null;   // 建造模式：'tile'（木筏格子）/ 'sail'（船帆）
+    this.buildTarget = null; // 当前建造目标 { ok, reason, ... }
+    this.buildings = []; // 已建建筑：[{ type, x, z }]（x/z 为木筏局部坐标）
+  }
+
+  _recipe(id) {
+    return this.crafting.recipes.find((r) => r.id === id);
+  }
+
+  _costText(recipe) {
+    return Object.entries(recipe.cost)
+      .map(([id, n]) => `${ITEMS[id]?.name || id}x${n}`)
+      .join(' ');
+  }
+
+  // 在合成菜单中选中建筑配方后进入建造模式（幽灵格随之出现），左键放置、右键/Esc 取消。
+  // 选择时即给出提示：能否建造 / 如何操作。返回是否成功进入建造模式。
+  selectBuild(id) {
+    const r = this._recipe(id);
+    if (!r) return false;
+    if (id === 'sail' && this.raft.hasSail) {
+      this._flash('已建造船帆，无法重复建造', 2.0);
+      return false;
+    }
+    this.buildMode = id;
+    const ok = this.crafting.canCraft(r);
+    this._flash(ok
+      ? `可以建造：${r.name}（${this._costText(r)}）左键放置，右键/Esc 取消`
+      : '无法建造（材料不足）', 3.0);
+    return true;
+  }
+
+  cancelBuild() {
+    this.buildMode = null;
+    this.buildTarget = null;
+    this.ghost.visible = false;
+    this.sailGhost.visible = false;
   }
 
   _setupTools() {
@@ -92,6 +148,7 @@ export class Game {
     this.toolMsg = '';
     this.toolMsgTimer = 0;
     this.fishing = null;
+    this.aimingSail = false; // 是否处于“转动视角设定船帆航向”模式
 
     // 鱼竿可视化：钓线（相机→浮漂）+ 浮漂小球
     this.fishingLine = new THREE.Line(
@@ -129,11 +186,26 @@ export class Game {
   _bindInteractions() {
     document.addEventListener('keydown', (e) => {
       if (e.code === 'KeyV') this.thirdPerson = !this.thirdPerson; // 切换第一/三人称
+      // E：调整航向时确认；否则瞄准船帆时打开互动面板
+      if (e.code === 'KeyE') {
+        if (this.aimingSail) this.confirmSailAim();
+        else if (!this.ui.openPanel && this._aimAtSail()) this.ui.toggleSailPanel();
+      }
+      if (e.code === 'Escape') {
+        // Esc：先取消定航向 → 再关面板 → 最后退出建造模式
+        if (this.aimingSail) this.cancelSailAim();
+        else if (this.ui.openPanel) this.ui.closePanels();
+        else this.cancelBuild();
+      }
     });
     document.addEventListener('mousedown', (e) => {
       if (this.ui.openPanel) return;
       if (e.button === 0) this._onLeftDown();  // 左键：使用道具（鱼竿/钩锁蓄力） / 建造
-      if (e.button === 2) this._tryPickup();     // 右键：瞄准拾取
+      if (e.button === 2) {
+        if (this.aimingSail) { this.cancelSailAim(); return; } // 调整航向中：右键取消
+        if (this.buildMode) { this.cancelBuild(); return; }    // 建造模式：右键取消
+        this._tryPickup();                                    // 右键：瞄准拾取
+      }
     });
     document.addEventListener('mouseup', (e) => {
       if (e.button === 0) this._onLeftUp();
@@ -143,6 +215,8 @@ export class Game {
 
   // —— 装备 / 使用 ——
   _equip(id) {
+    // 建造依赖于幽灵格：切换掉建造锤即退出建造模式
+    if (id !== 'build_hammer') this.cancelBuild();
     if (id === null) { this.equipped = null; this.ui.setEquipped(null); return; }
     if (!this.inventory.has(id)) {
       this.ui.setPrompt(`尚未拥有 ${ITEMS[id]?.name || id}`);
@@ -161,10 +235,12 @@ export class Game {
     }
   }
 
-  // 左键按下：建造锤——建造；鱼竿/钩锁——蓄力抛出；其它道具——立即使用
+  // 左键按下：建造模式（幽灵格已出现）——建造；鱼竿/钩锁——蓄力抛出；其它道具——立即使用
   _onLeftDown() {
     if (!this.player.locked) return;
-    if (this.equipped === 'build_hammer') { this._tryBuild(); return; }
+    if (this.aimingSail) { this.confirmSailAim(); return; } // 调整航向：左键确认
+    if (this.buildMode === 'tile') { this._tryBuild(); return; }
+    if (this.buildMode === 'sail') { this._tryBuildSail(); return; }
     if (this.toolCooldown > 0) return;
     if (this.equipped === 'fishing_rod' || this.equipped === 'hook_lock') {
       this.charging = { type: this.equipped, t: 0 };
@@ -395,8 +471,60 @@ export class Game {
 
   }
 
-  // 右键：拾取「瞄准（视角前方）且近距离」的漂浮物
+  // 准星是否瞄准船帆（近距离）——用于打开船帆互动面板
+  _aimAtSail() {
+    if (!this.raft.hasSail) return false;
+    this.camera.updateMatrixWorld();
+    this.raft.group.updateMatrixWorld(true);
+    const ray = new THREE.Raycaster();
+    ray.setFromCamera(new THREE.Vector2(0, 0), this.camera);
+    const hit = ray.intersectObject(this.raft.sailMesh, true)[0];
+    return !!hit && hit.distance <= 4.5;
+  }
+
+  // 船帆互动：展开/收起
+  toggleSail() {
+    if (!this.raft.hasSail) return;
+    this.raft.setSailOpen(!this.raft.sailOpen);
+    this._flash(this.raft.sailOpen
+      ? '船帆已展开：航速将缓慢提升到峰值'
+      : '船帆已收起：航速逐渐回落到洋流漂移', 1.5);
+  }
+
+  // 船帆互动：进入“瞄准定航向”模式——转动视角预览，玩家确认后把船帆固定到该朝向
+  beginSailAim() {
+    if (!this.raft.hasSail) return;
+    this.ui.closePanels(); // 关闭面板并重新锁定鼠标，便于转动视角
+    this.aimingSail = true;
+    this.raft.sailPreviewYaw = this.player.yaw;
+  }
+
+  // 确认：把船帆固定为当前玩家朝向
+  confirmSailAim() {
+    if (!this.aimingSail) return;
+    this.raft.setSailYaw(this.player.yaw);
+    this.raft.sailPreviewYaw = null;
+    this.aimingSail = false;
+    this._flash(`船帆航向已固定为 ${this._headingText(this.player.yaw)}，木筏将缓慢转向`, 2.5);
+  }
+
+  cancelSailAim() {
+    if (!this.aimingSail) return;
+    this.raft.sailPreviewYaw = null;
+    this.aimingSail = false;
+    this._flash('已取消调整船帆航向', 1.5);
+  }
+
+  // yaw → 八方位文字（0°=北，顺时针），用于船帆航向提示
+  _headingText(yaw) {
+    const deg = ((-yaw * 180 / Math.PI) % 360 + 360) % 360;
+    const names = ['北', '东北', '东', '东南', '南', '西南', '西', '西北'];
+    return `${names[Math.round(deg / 45) % 8]}（${Math.round(deg)}°）`;
+  }
+
+  // 右键：瞄准船帆时打开互动面板；否则拾取「瞄准（视角前方）且近距离」的漂浮物
   _tryPickup() {
+    if (this._aimAtSail()) { this.ui.toggleSailPanel(); return; }
     const fwd = this._forward();
     let best = null, bestD = 3.0;
     for (const it of this.resources.items) {
@@ -413,15 +541,106 @@ export class Game {
   }
 
   _tryBuild() {
-    const [gx, gz] = this.raft.worldToGrid(this.player.pos.x, this.player.pos.z);
     // 找到玩家所在格相邻的空格用于扩建
     const cell = this.raft.nearestEmptyNeighbor(this.player.pos.x, this.player.pos.z);
-    if (!cell) return;
+    if (!cell) { this._flash('附近没有可扩建的位置', 1.2); return; }
     if (!this.inventory.consume('lumber', 2)) {
       this.ui.setPrompt('需要 2木材来扩建木筏');
       return;
     }
     this.raft.addTile(cell[0], cell[1]);
+    // 建造模式保留，可连续扩建；右键/Esc 退出
+    this._flash(this.buildMode === 'tile' ? '扩建完成（右键/Esc 退出建造）' : '扩建完成', 1.0);
+    this.ui.refreshCounts();
+  }
+
+  // 准星射线命中木筏面的精确世界坐标（不做格子吸附）；未命中返回 null
+  _pickRaftPoint() {
+    // 相机与木筏本帧位置都已变化，先刷新世界矩阵，避免射线用上一帧的变换
+    this.camera.updateMatrixWorld();
+    this.raft.group.updateMatrixWorld(true);
+    const ray = new THREE.Raycaster();
+    ray.setFromCamera(new THREE.Vector2(0, 0), this.camera);
+    const hit = ray.intersectObjects([...this.raft.tiles.values()], false)[0];
+    if (!hit) return null;
+    return { x: hit.point.x, z: hit.point.z };
+  }
+
+  // 船帆占地（1.6 宽）的四个角是否都在木筏格内：超出一点也算超出
+  _sailFitsOnRaft(x, z) {
+    const h = 0.8;
+    return [[-1, -1], [1, -1], [-1, 1], [1, 1]]
+      .every(([sx, sz]) => this.raft.containsPoint(x + sx * h, z + sz * h));
+  }
+
+  // 是否与已建建筑（木墙/渔网）重叠（按占地半径近似）
+  _overlapsBuilding(lx, lz) {
+    for (const b of this.buildings) {
+      if (Math.hypot(lx - b.x, lz - b.z) < 1.7) return true;
+    }
+    return false;
+  }
+
+  // 建造预览：按建造模式刷新幽灵格/船帆幽灵，并记录目标是否可建造
+  _updateBuildPreview() {
+    if (this.buildMode !== 'tile') this.ghost.visible = false;
+    if (this.buildMode !== 'sail') this.sailGhost.visible = false;
+    this.buildTarget = null;
+    if (!this.buildMode) return;
+
+    if (this.buildMode === 'tile') {
+      const cell = this.raft.nearestEmptyNeighbor(this.player.pos.x, this.player.pos.z);
+      if (!cell) {
+        this.ghost.visible = false;
+        this.buildTarget = { cell: null, ok: false, reason: '附近没有可扩建的位置' };
+        return;
+      }
+      const [lx, lz] = this.raft.gridToLocal(cell[0], cell[1]);
+      this.ghost.position.set(lx, -0.15, lz);
+      const ok = this.crafting.canCraft(this._recipe('tile'));
+      this.ghost.material.color.set(ok ? 0x00ff88 : 0xff4444);
+      this.ghost.visible = true;
+      this.buildTarget = { cell, ok, reason: ok ? '' : '材料不足' };
+      return;
+    }
+
+    // 船帆：放在准星命中的任意位置（不吸附格子中心）
+    const point = this._pickRaftPoint();
+    if (!point) {
+      this.sailGhost.visible = false;
+      this.buildTarget = { point: null, ok: false, reason: '超出木筏' };
+      return;
+    }
+    const lx = point.x - this.raft.offset.x; // 转成木筏局部坐标（随筏漂移）
+    const lz = point.z - this.raft.offset.z;
+    const hasMats = this.crafting.canCraft(this._recipe('sail'));
+    let reason = '';
+    if (!this._sailFitsOnRaft(point.x, point.z)) reason = '超出木筏';
+    else if (this._overlapsBuilding(lx, lz)) reason = '与该建筑重叠';
+    else if (!hasMats) reason = '材料不足';
+    else if (this.raft.hasSail) reason = '已建造船帆';
+    const ok = !reason;
+    this.sailGhost.position.set(lx, 0, lz);
+    this.sailGhostMat.color.set(ok ? 0x00ff88 : 0xff4444);
+    this.sailGhost.visible = true;
+    this.buildTarget = { point: { x: lx, z: lz }, ok, reason };
+  }
+
+  _tryBuildSail() {
+    if (!this.buildTarget) this._updateBuildPreview(); // 极快点击时先用当前准星刷新目标
+    const b = this.buildTarget;
+    if (!b || !b.point) { this._flash('无法建造（超出木筏）', 1.2); return; }
+    if (!b.ok) { this._flash(`无法建造（${b.reason}）`, 1.2); return; }
+    const r = this._recipe('sail');
+    if (!this.crafting.canCraft(r)) { this._flash('无法建造（材料不足）', 1.2); return; }
+    Object.entries(r.cost).forEach(([id, n]) => this.inventory.consume(id, n));
+    if (!this.raft.addSail(b.point.x, b.point.z)) {
+      this._flash('已建造船帆，无法重复建造', 1.5);
+      return;
+    }
+    this.buildings.push({ type: 'sail', x: b.point.x, z: b.point.z });
+    this.cancelBuild(); // 船帆只能建一个，放置后退出建造模式
+    this._flash('船帆建造完成：右键船帆可展开/收起并调整航向', 2.5);
     this.ui.refreshCounts();
   }
 
@@ -459,6 +678,7 @@ export class Game {
     wall.position.set(wx, 0.8, wz);
     wall.castShadow = true;
     this.raft.group.add(wall);
+    this.buildings.push({ type: 'wall', x: wx, z: wz }); // 记录位置，避免船帆重叠
   }
 
   // 渔网作为木筏建筑：放置在玩家当前所在格，挂在 raft.group 下随木筏一起漂移，
@@ -474,6 +694,7 @@ export class Game {
     net.castShadow = true;
     this.raft.group.add(net);
     this.placedNets.push(net);
+    this.buildings.push({ type: 'net', x: lx, z: lz }); // 记录位置，避免船帆重叠
   }
 
   // 木筏上的渔网定期自动收集半径内的漂浮物
@@ -511,6 +732,8 @@ export class Game {
     if (Math.hypot(this.player.pos.x, this.player.pos.z) > this.edgeRadius) this._recenter();
 
     this.ocean.update(t);
+    // 调整航向中：船帆随玩家视角实时转向预览（确认后才固定）
+    if (this.aimingSail) this.raft.sailPreviewYaw = this.player.yaw;
     this.raft.update(this.ocean, t, dt, this.player);
     // 合成表/背包打开时冻结玩家移动（但仍随木筏漂移），关闭后恢复
     const frozen = this.ui.openPanel !== null;
@@ -546,34 +769,32 @@ export class Game {
     this._updateHook(dt, t);
     this._updateNets(dt);
 
-    // 建造预览：手持建造锤且有可扩建相邻空格时显示幽灵格（无论材料是否足够）
-    const cell = this.raft.nearestEmptyNeighbor(this.player.pos.x, this.player.pos.z);
-    if (cell && this.equipped === 'build_hammer') {
-      const [wx, wz] = this.raft.gridToWorld(cell[0], cell[1]);
-      this.ghost.position.set(wx, 0, wz);
-      // 材料足够为绿色，不足为红色
-      this.ghost.material.color.set(this.inventory.has('lumber', 2) ? 0x00ff88 : 0xff4444);
-      this.ghost.visible = true;
-    } else {
-      this.ghost.visible = false;
-    }
+    // 建造预览：幽灵格/船帆幽灵随建造模式刷新（均绑定于木筏，随筏漂移）
+    this._updateBuildPreview();
 
     // 提示优先级：钓鱼中 > 道具反馈 > 拾取/建造
     let prompt = '';
     if (this.fishing) {
       prompt = '🎣 等待鱼儿上钩…';
+    } else if (this.aimingSail) {
+      prompt = `转动视角确定船帆航向：${this._headingText(this.player.yaw)}　左键/E 确认，右键/Esc 取消`;
     } else if (this.toolMsgTimer > 0) {
       this.toolMsgTimer -= dt;
       prompt = this.toolMsg;
     } else {
       const near = this.resources.nearest(this.player.pos);
-      if (near) {
+      if (!this.buildMode && this._aimAtSail()) {
+        prompt = '右键/E 操作船帆（开/收帆、调整航向）';
+      } else if (near) {
         prompt = `右键 拾取 ${this._label(near.type)}`;
-      } else if (this.equipped === 'build_hammer' && cell) {
-        // 手持建造锤并选中木筏（含渔网等建筑）的可建造位置时提示，材料不足给出反馈
-        prompt = this.inventory.has('lumber', 2)
-          ? '左键 扩建木筏 (2 木材)'
-          : '无法建造（缺少木材）';
+      } else if (this.buildMode && this.buildTarget) {
+        const b = this.buildTarget;
+        if (!b.ok) {
+          prompt = `无法建造（${b.reason}）　右键/Esc 取消`;
+        } else {
+          const r = this._recipe(this.buildMode);
+          prompt = `左键 放置${r.name}（${this._costText(r)}）　右键/Esc 取消`;
+        }
       }
     }
     this.ui.setPrompt(prompt);

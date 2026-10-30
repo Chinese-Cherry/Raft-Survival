@@ -77,6 +77,22 @@
       width: 320px; background: rgba(0,0,0,.5); padding: 16px; border-radius: 12px;
       display: none; pointer-events: auto; z-index: 3;
     }
+    /* 船帆互动面板 */
+    #sail-panel {
+      position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+      width: 280px; background: rgba(0,0,0,.6); padding: 16px; border-radius: 12px;
+      display: none; pointer-events: auto; z-index: 4; text-align: center;
+    }
+    #sail-panel h3 { font-size: 15px; margin-bottom: 10px; }
+    #sail-panel .state { font-size: 13px; opacity: .88; margin-bottom: 10px; line-height: 1.7; }
+    #sail-panel button {
+      width: 100%; margin-top: 8px; padding: 8px 0; cursor: pointer;
+      background: rgba(255,255,255,.12); color: #fff; border: 1px solid rgba(255,255,255,.25);
+      border-radius: 8px; font-size: 13px;
+    }
+    #sail-panel button:hover { background: rgba(255,255,255,.22); }
+    #sail-panel .row { display: flex; gap: 8px; }
+    #sail-panel .row button { flex: 1; }
     #backpack h3 { font-size: 15px; margin-bottom: 10px; }
     #backpack-grid {
       display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px;
@@ -111,10 +127,10 @@
     <div id="equipped"></div>
     <div id="help">
       WASD 移动 · 鼠标 视角 · Shift 疾跑 · Space 跳跃<br/>
-      E 拾取/互动 · 左键 建造/放置 · F 使用道具<br/>
+      右键 拾取/操作 · 左键 建造/放置 · F 使用道具<br/>
       1-9 选择快捷栏 · C 合成菜单 · B 背包<br/>
-      无帆：木筏随洋流同漂浮物同向漂移、略快<br/>
-      有帆：转动视角掌舵，木筏朝视线方向航行
+      无帆/收帆：木筏随洋流漂移；扬帆：按船帆固定航向航行<br/>
+      右键/E 瞄准船帆：开/收帆；调整航向时看向目标方向后左键确认
     </div>
 
     <div id="hotbar"></div>
@@ -122,6 +138,14 @@
     <div id="backpack">
       <h3>背包 <span style="opacity:.5;font-weight:400">（按 B 关闭）</span></h3>
       <div id="backpack-grid"></div>
+    </div>
+
+    <div id="sail-panel">
+      <h3>船帆</h3>
+      <div class="state" id="sail-state"></div>
+      <button id="sail-toggle">收起船帆</button>
+      <button id="sail-set">调整航向（转动视角后确认）</button>
+      <button id="sail-close">关闭（Esc）</button>
     </div>
     <div id="prompt"></div>
     <div id="crafting">
