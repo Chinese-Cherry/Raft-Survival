@@ -44,9 +44,9 @@ export const CFG = {
   floatScale: {         // 各漂浮物的单独缩放倍率（按类型）
     plastic: 1.0, lumber: 1.0, apple: 0.2, banana: 0.3, orange: 0.2, leaf: 0.1,
   },
-  raftDriftSpeed: 2.2,  // 木筏无帆漂移速度
-  raftSailSpeed: 4.0,   // 扬帆后的峰值航行速度
-  sailRampTime: 5.0,    // 扬帆后航速从漂移速度爬升到峰值所需时间（秒），越小加速越快
+  raftDriftSpeed: 2.2,  // 木筏无帆/收帆时的漂移速度
+  raftSailSpeed: 3.5,   // 船帆速度上限（扬帆后的峰值航速），木筏实际速度不会超过该值
+  sailRampTime: 5.0,    // 扬帆后航速从漂移速度爬升到上限所需时间（秒），越小加速越快
   sailTurnSpeed: 0.6,   // 船帆转向角速度（弧度/秒，约 34°/秒），越小转向越慢
   floatSpeedMin: 1.0,   // 漂浮物漂移速度下限
   floatSpeedMax: 2.0,   // 漂浮物漂移速度上限
@@ -57,5 +57,8 @@ export const CFG = {
   startSpawnMax: 30,    // 开局生成环：距木筏最远距离
   spawnInterval: 0.75,   // 漂浮物持续生成间隔（秒），越小生成越快
   maxItems: 50,         // 场上漂浮物数量上限（达到则暂停生成，营造源源不断之感）
+  rescueRange: 30,      // 保底机制：离木筏超过该距离后，按 Esc 可选择传送回木筏
+  netContactRadius: 1.2, // 渔网碰触漂浮物即吸入的半径（网心为圆心；渔网所在格内的漂浮物一定会被吸入）
+  netAutoItemInterval: 60.0, // 渔网每隔多少秒自动产出一件随机漂浮物对应物品（越小出得越快）
   Debug: false,         // 调试模式：漂浮物就近生成且不移动、木筏不漂移；面板随此开关显隐
 };

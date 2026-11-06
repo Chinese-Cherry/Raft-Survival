@@ -134,6 +134,16 @@ export class Resources {
     this.items.splice(idx, 1);
   }
 
+  // 被渔网吸入：从水面移除但不进背包，返回其类型（供渔网稍后加工成物品）
+  absorb(it) {
+    const idx = this.items.indexOf(it);
+    if (idx === -1) return null;
+    const type = it.type;
+    this._remove(it);
+    this.items.splice(idx, 1);
+    return type;
+  }
+
   // 从场景移除并释放几何体（模型克隆共享几何体，仅释放一次性几何）
   _remove(it) {
     this.scene.remove(it.mesh);

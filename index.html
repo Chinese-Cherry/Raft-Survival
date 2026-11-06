@@ -93,6 +93,45 @@
     #sail-panel button:hover { background: rgba(255,255,255,.22); }
     #sail-panel .row { display: flex; gap: 8px; }
     #sail-panel .row button { flex: 1; }
+    /* 渔网储物面板（与背包同样式的 4x4 格子） */
+    #net-panel {
+      position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+      width: 320px; background: rgba(0,0,0,.6); padding: 16px; border-radius: 12px;
+      display: none; pointer-events: auto; z-index: 4; text-align: center;
+    }
+    #net-panel h3 { font-size: 15px; margin-bottom: 10px; }
+    #net-panel .state { font-size: 13px; opacity: .88; margin-bottom: 10px; line-height: 1.7; }
+    #net-grid {
+      display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 10px;
+    }
+    #net-panel button {
+      width: 100%; margin-top: 8px; padding: 8px 0; cursor: pointer;
+      background: rgba(255,255,255,.12); color: #fff; border: 1px solid rgba(255,255,255,.25);
+      border-radius: 8px; font-size: 13px;
+    }
+    #net-panel button:hover { background: rgba(255,255,255,.22); }
+    #net-panel .row { display: flex; gap: 8px; }
+    #net-panel .row button { flex: 1; }
+    /* 渔网面板打开时：渔网在左、背包在右，并排显示便于转移物品 */
+    #net-panel.with-backpack { left: calc(50% - 180px); }
+    #backpack.with-net { left: calc(50% + 180px); }
+    /* 远离木筏：Esc 传送确认面板 */
+    #rescue-panel {
+      position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+      width: 300px; background: rgba(0,0,0,.72); padding: 16px; border-radius: 12px;
+      display: none; pointer-events: auto; z-index: 6; text-align: center;
+      border: 1px solid rgba(255,211,77,.45);
+    }
+    #rescue-panel h3 { font-size: 15px; margin-bottom: 10px; color: #ffd34d; }
+    #rescue-panel .state { font-size: 13px; opacity: .92; margin-bottom: 10px; line-height: 1.8; }
+    #rescue-panel button {
+      width: 100%; margin-top: 8px; padding: 8px 0; cursor: pointer;
+      background: rgba(255,255,255,.12); color: #fff; border: 1px solid rgba(255,255,255,.25);
+      border-radius: 8px; font-size: 13px;
+    }
+    #rescue-panel button:hover { background: rgba(255,255,255,.22); }
+    #rescue-panel .row { display: flex; gap: 8px; }
+    #rescue-panel .row button { flex: 1; }
     #backpack h3 { font-size: 15px; margin-bottom: 10px; }
     #backpack-grid {
       display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px;
@@ -103,6 +142,11 @@
       justify-content: center; position: relative; font-size: 11px; color: #fff; cursor: pointer;
     }
     .cell.active, .cell:hover { border-color: rgba(255,211,77,.7); }
+    /* 已选中等待交换的格子：高亮描边 */
+    .cell.picked, .slot.picked {
+      border-color: #ffd34d;
+      box-shadow: 0 0 0 2px rgba(255,211,77,.5) inset, 0 0 12px rgba(255,211,77,.55);
+    }
     .cell .ico { font-size: 24px; line-height: 1; }
     /* 图片图标：限制尺寸并居中，避免原始大图溢出格子 */
     .slot img.ico, .cell img.ico { width: 36px; height: 36px; object-fit: contain; }
@@ -130,13 +174,14 @@
       右键 拾取/操作 · 左键 建造/放置 · F 使用道具<br/>
       1-9 选择快捷栏 · C 合成菜单 · B 背包<br/>
       无帆/收帆：木筏随洋流漂移；扬帆：按船帆固定航向航行<br/>
-      右键/E 瞄准船帆：开/收帆；调整航向时看向目标方向后左键确认
+      右键/E 瞄准船帆：开/收帆；调整航向时看向目标方向后左键确认<br/>
+      右键/E 瞄准渔网：打开渔网储物面板，点击格子取出到背包
     </div>
 
     <div id="hotbar"></div>
 
     <div id="backpack">
-      <h3>背包 <span style="opacity:.5;font-weight:400">（按 B 关闭）</span></h3>
+      <h3>背包 <span style="opacity:.5;font-weight:400">（按 B 关闭 · 点击两格交换物品）</span></h3>
       <div id="backpack-grid"></div>
     </div>
 
@@ -146,6 +191,23 @@
       <button id="sail-toggle">收起船帆</button>
       <button id="sail-set">调整航向（转动视角后确认）</button>
       <button id="sail-close">关闭（Esc）</button>
+    </div>
+    <div id="rescue-panel">
+      <h3>远离木筏</h3>
+      <div class="state" id="rescue-info"></div>
+      <div class="row">
+        <button id="rescue-confirm">传送回木筏</button>
+        <button id="rescue-cancel">继续探索</button>
+      </div>
+    </div>
+    <div id="net-panel">
+      <h3>渔网</h3>
+      <div class="state" id="net-info"></div>
+      <div id="net-grid"></div>
+      <div class="row">
+        <button id="net-take-all">全部取出</button>
+        <button id="net-close">关闭（Esc）</button>
+      </div>
     </div>
     <div id="prompt"></div>
     <div id="crafting">

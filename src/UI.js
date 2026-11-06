@@ -18,6 +18,14 @@ export class UI {
     this.elSailState = document.getElementById("sail-state");
     this.elSailToggle = document.getElementById("sail-toggle");
     this.elSailClose = document.getElementById("sail-close");
+    // 渔网储物面板（与背包同样式：4x4 格，点格取出到背包）
+    this.elNet = document.getElementById("net-panel");
+    this.elNetGrid = document.getElementById("net-grid");
+    this.elNetInfo = document.getElementById("net-info");
+    this.currentNet = null;
+    // 远离木筏时的传送确认面板（Esc 触发）
+    this.elRescue = document.getElementById("rescue-panel");
+    this.elRescueInfo = document.getElementById("rescue-info");
     this.elHotbar = document.getElementById("hotbar");
     this.elEquipped = document.getElementById("equipped");
     this.elCharge = document.getElementById("charge");
@@ -25,7 +33,8 @@ export class UI {
     this.elOverlay = document.getElementById("overlay");
     this.elApp = document.getElementById("app");
 
-    this.openPanel = null; // 当前打开的面板：'crafting' | 'backpack' | 'sail' | null
+    this.openPanel = null; // 当前打开的面板：'crafting' | 'backpack' | 'sail' | 'net' | null
+    this.picked = null;    // 当前选中的格子：{ area: 'hotbar'|'pack'|'net', idx }
 
     // 船帆互动面板：开/收帆、转向
     this.elSailToggle.addEventListener("click", () => {
@@ -37,6 +46,16 @@ export class UI {
       this.game.beginSailAim();
     });
     this.elSailClose.addEventListener("click", () => this._closePanels());
+
+    // 渔网面板：全部取出 / 关闭
+    document.getElementById("net-take-all").addEventListener("click", () => {
+      if (this.currentNet) this.game.takeAllNetItems(this.currentNet);
+    });
+    document.getElementById("net-close").addEventListener("click", () => this._closePanels());
+
+    // 传送确认面板：传送回木筏 / 继续探索
+    document.getElementById("rescue-confirm").addEventListener("click", () => this.game.teleportToRaft());
+    document.getElementById("rescue-cancel").addEventListener("click", () => this._closePanels());
 
     this.elOverlay.addEventListener("click", () => {
       if (this.openPanel) return;
@@ -69,9 +88,9 @@ export class UI {
     this.renderHotbar();
   }
 
-  // 渲染单格（快捷栏/背包通用）。slot 为 null 时显示空格子。
+  // 渲染单格（快捷栏/背包/渔网通用）。slot 为 null 时显示空格子。
   cellHTML(slot, idx, opts = {}) {
-    const cls = (opts.cls || "cell") + (opts.active ? " active" : "");
+    const cls = (opts.cls || "cell") + (opts.active ? " active" : "") + (opts.picked ? " picked" : "");
     const num = opts.num ? `<span class="num">${idx + 1}</span>` : "";
     if (!slot) return `<div class="${cls}" data-idx="${idx}">${num}</div>`;
     const def = ITEMS[slot.id];
@@ -88,31 +107,121 @@ export class UI {
     </div>`;
   }
 
-  // 底部快捷栏：9 格，始终显示；点击或按 1-9 选中（工具类选中即装备）。
+  // 底部快捷栏：9 格，始终显示；无面板时点击即选中（工具类选中即装备），
+  // 面板打开时点击改为"选中格子"，用于和另一个格子交换物品。
   renderHotbar() {
     this.elHotbar.innerHTML = this.inv.hotbar
-      .map((s, i) => this.cellHTML(s, i, { cls: "slot", active: i === this.activeSlot, num: true }))
+      .map((s, i) => this.cellHTML(s, i, {
+        cls: "slot",
+        active: i === this.activeSlot,
+        num: true,
+        picked: this._isPicked('hotbar', i),
+      }))
       .join("");
     this.elHotbar.querySelectorAll(".slot").forEach((el) => {
       el.addEventListener("click", (ev) => {
         ev.stopPropagation();
-        this.selectSlot(+el.dataset.idx);
+        const i = +el.dataset.idx;
+        // 背包/渔网面板打开时：快捷栏格子也参与"选两格交换"
+        if (this._swapMode()) this.pickCell('hotbar', i);
+        else this.selectSlot(i);
       });
     });
   }
 
-  // 背包面板：4x4=16 格固定格子（无物品显示空格子）；点击工具类格子可装备。
+  // 背包面板：4x4=16 格固定格子（无物品显示空格子）。
+  // 点击 = 选中/交换两个格子；双击工具类格子 = 装备。
   renderBackpack() {
     let cells = "";
-    for (let i = 0; i < PACK_SIZE; i++) cells += this.cellHTML(this.inv.pack[i], i, { cls: "cell" });
+    for (let i = 0; i < PACK_SIZE; i++) {
+      cells += this.cellHTML(this.inv.pack[i], i, { cls: "cell", picked: this._isPicked('pack', i) });
+    }
     this.elBackpackGrid.innerHTML = cells;
     this.elBackpackGrid.querySelectorAll(".cell").forEach((el) => {
+      const idx = +el.dataset.idx;
       el.addEventListener("click", (ev) => {
         ev.stopPropagation();
-        const s = this.inv.pack[+el.dataset.idx];
+        this.pickCell('pack', idx);
+      });
+      el.addEventListener("dblclick", (ev) => {
+        ev.stopPropagation();
+        const s = this.inv.pack[idx];
         if (s && ITEMS[s.id]?.category === "tool") this.game._equip(s.id);
       });
     });
+  }
+
+  // —— 格子选中 / 交换 ——
+  // 所有显示物品的格子（快捷栏 / 背包 / 渔网储物格）共用一套逻辑：
+  // 第一次点击选中一格（高亮），再点另一格即把两格内容互换；点同一格取消选中。
+  // 是否处于"格子交换"状态（背包/渔网面板显示时）
+  _swapMode() { return this.openPanel === 'backpack' || this.openPanel === 'net'; }
+
+  _areaSlots(area) {
+    if (area === 'hotbar') return this.inv.hotbar;
+    if (area === 'pack') return this.inv.pack;
+    if (area === 'net' && this.currentNet) return this.currentNet.storage;
+    return null;
+  }
+
+  _isPicked(area, idx) {
+    const p = this.picked;
+    return !!p && p.area === area && p.idx === idx;
+  }
+
+  // 只更新"选中"高亮（不重建 DOM，避免双击失效）
+  _applyPickedHighlight() {
+    document.querySelectorAll('.cell.picked, .slot.picked')
+      .forEach((el) => el.classList.remove('picked'));
+    if (!this.picked) return;
+    const p = this.picked;
+    const box = p.area === 'hotbar' ? this.elHotbar
+      : p.area === 'pack' ? this.elBackpackGrid
+      : this.elNetGrid;
+    const el = box && box.querySelector(`[data-idx="${p.idx}"]`);
+    if (el) el.classList.add('picked');
+  }
+
+  pickCell(area, idx) {
+    const slots = this._areaSlots(area);
+    if (!slots || idx < 0 || idx >= slots.length) return;
+    const p = this.picked;
+    if (p && p.area === area && p.idx === idx) { // 再点一次：取消选中
+      this.picked = null;
+      this._applyPickedHighlight();
+      return;
+    }
+    if (!p) { // 第一次点击：记下起点
+      this.picked = { area, idx };
+      this._applyPickedHighlight();
+      return;
+    }
+    // 第二次点击：两格内容互换（可跨容器：快捷栏 ↔ 背包 ↔ 渔网）
+    const from = this._areaSlots(p.area);
+    if (!from) { this.picked = null; this._applyPickedHighlight(); return; }
+    const a = from[p.idx];
+    const b = slots[idx];
+    from[p.idx] = b;
+    slots[idx] = a;
+    this.picked = null;
+    // 主手（当前选中的快捷栏格）内容被换掉时，自动装备/卸下工具
+    const mainTouched =
+      (p.area === 'hotbar' && p.idx === this.activeSlot) ||
+      (area === 'hotbar' && idx === this.activeSlot);
+    if (mainTouched) this.syncMainHand();
+    this.refreshCounts();
+    if (area === 'net' || p.area === 'net') {
+      if (this.openPanel === 'net') this.renderNet();
+    }
+  }
+
+  // 让"主手"与当前选中快捷栏格的内容保持一致：
+  // 格内是工具 → 装备；是空/普通物品 → 卸下。
+  syncMainHand() {
+    const s = this.inv.hotbar[this.activeSlot];
+    const id = s && ITEMS[s.id]?.category === "tool" ? s.id : null;
+    if (id === this.game.equipped) return;
+    this.game._equip(id);
   }
 
   refreshCounts() {
@@ -125,9 +234,7 @@ export class UI {
   selectSlot(i) {
     if (i < 0 || i >= HOTBAR_SIZE) return;
     this.activeSlot = i;
-    const s = this.inv.hotbar[i];
-    if (s && ITEMS[s.id]?.category === "tool") this.game._equip(s.id);
-    else this.game._equip(null);
+    this.syncMainHand(); // 格内是工具则装备，空/普通物品则卸下
     this.renderHotbar();
   }
 
@@ -163,6 +270,7 @@ export class UI {
     if (this.openPanel && this.openPanel !== which) return; // 另一个面板已开，禁止打开
     if (this.openPanel === which) { this._closePanels(); return; } // 再次按下则关闭
     if (this.game.aimingSail) this.game.cancelSailAim(); // 打开任意面板时退出定航向模式
+    this.picked = null; // 新面板打开时清空格子选中态
     if (which === 'crafting') {
       this.game.cancelBuild(); // 重新打开合成菜单时退出建造模式（幽灵格隐藏）
       this.elCraft.style.display = 'block';
@@ -171,6 +279,18 @@ export class UI {
       this.game.cancelBuild(); // 打开船帆面板时同时退出建造模式
       this.renderSail();
       this.elSail.style.display = 'block';
+    } else if (which === 'rescue') {
+      this.renderRescue();
+      this.elRescue.style.display = 'block';
+    } else if (which === 'net') {
+      this.game.cancelBuild(); // 打开渔网面板时同时退出建造模式
+      this.renderNet();
+      this.elNet.style.display = 'block';
+      // 渔网面板与背包并排打开，方便直接把物品取到背包
+      this.elNet.classList.add('with-backpack');
+      this.elBackpack.classList.add('with-net');
+      this.elBackpack.style.display = 'block';
+      this.renderBackpack();
     } else {
       this.elBackpack.style.display = 'block';
       this.renderBackpack();
@@ -182,7 +302,15 @@ export class UI {
   _closePanels() {
     this.elCraft.style.display = 'none';
     this.elBackpack.style.display = 'none';
+    this.elBackpack.classList.remove('with-net');
     if (this.elSail) this.elSail.style.display = 'none';
+    if (this.elRescue) this.elRescue.style.display = 'none';
+    if (this.elNet) {
+      this.elNet.style.display = 'none';
+      this.elNet.classList.remove('with-backpack');
+    }
+    this.currentNet = null;
+    this.picked = null;
     this.openPanel = null;
     this.game.player.requestLock(); // 全部关闭后重新锁定指针
   }
@@ -193,8 +321,68 @@ export class UI {
   }
 
   toggleCrafting() { this._openPanel('crafting'); }
-  toggleBackpack() { this._openPanel('backpack'); }
+  // 渔网面板打开时背包是"并排"显示的，此时按 B 收起的应是整个组合面板
+  toggleBackpack() {
+    if (this.openPanel === 'net') { this._closePanels(); return; }
+    this._openPanel('backpack');
+  }
   toggleSailPanel() { this._openPanel('sail'); }
+
+  // 保底机制：离木筏过远时由 Game 调用，弹出"是否传送回木筏"确认
+  openRescuePanel() {
+    this._openPanel('rescue');
+  }
+
+  renderRescue() {
+    if (!this.elRescueInfo) return;
+    const d = this.game.raftDistance();
+    this.elRescueInfo.innerHTML =
+      `你已离开木筏 <b>${d.toFixed(0)}</b> 米，继续游可能会彻底迷失。<br/>` +
+      `是否立即传送回木筏？`;
+  }
+
+  // 打开/切换渔网面板：同一个网再右键则关闭，换一个网则直接切换内容
+  toggleNetPanel(net) {
+    if (this.openPanel === 'net') {
+      if (this.currentNet === net) { this._closePanels(); return; }
+      this.currentNet = net;
+      this.picked = null; // 换了一张网：清空上一张网的选中格
+      this.renderNet();
+      return;
+    }
+    this.currentNet = net;
+    this._openPanel('net');
+  }
+
+  // 渲染渔网储物格：与背包一致的 4x4 格子与堆叠上限。
+  // 点击 = 选中/与另一格交换（可与背包、快捷栏互换）；双击 = 直接取出到背包。
+  renderNet() {
+    const net = this.currentNet;
+    if (!net || !this.elNetGrid) return;
+    const used = net.storage.filter(Boolean).length;
+    const total = net.storage.reduce((a, s) => a + (s ? s.n : 0), 0);
+    if (this.elNetInfo) {
+      this.elNetInfo.innerHTML =
+        `储物 ${used}/${PACK_SIZE} 格（共 ${total} 件）<br/>` +
+        `点两格交换物品，双击取出到背包`;
+    }
+    let cells = "";
+    for (let i = 0; i < PACK_SIZE; i++) {
+      cells += this.cellHTML(net.storage[i], i, { cls: "cell", picked: this._isPicked('net', i) });
+    }
+    this.elNetGrid.innerHTML = cells;
+    this.elNetGrid.querySelectorAll(".cell").forEach((el) => {
+      const idx = +el.dataset.idx;
+      el.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        this.pickCell('net', idx);
+      });
+      el.addEventListener("dblclick", (ev) => {
+        ev.stopPropagation();
+        this.game.takeNetItem(net, idx);
+      });
+    });
+  }
 
   // 船帆面板：显示展开状态与当前固定航向
   renderSail() {

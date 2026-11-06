@@ -1,10 +1,10 @@
 import * as THREE from 'three';
 import { Ocean } from './Ocean.js';
 import { Raft } from './Raft.js';
-import { Inventory } from './Inventory.js';
+import { Inventory, PACK_SIZE } from './Inventory.js';
 import { Crafting } from './Crafting.js';
 import { Player } from './Player.js';
-import { Resources } from './Resources.js';
+import { Resources, TYPES } from './Resources.js';
 import { UI } from './UI.js';
 import { ITEMS } from './Items.js';
 import { CFG, START_ITEMS, START_EQUIPPED } from './let.js';
@@ -101,9 +101,34 @@ export class Game {
     this.sailGhost.visible = false;
     this.raft.group.add(this.sailGhost);
 
-    this.buildMode = null;   // 建造模式：'tile'（木筏格子）/ 'sail'（船帆）
-    this.buildTarget = null; // 当前建造目标 { ok, reason, ... }
+    // 木墙幽灵：贴在目标格东/西/南/北边缘，细轴朝向偏移方向
+    this.wallGhost = new THREE.Mesh(
+      new THREE.BoxGeometry(1.8, 1.6, 0.3),
+      new THREE.MeshBasicMaterial({ color: 0x66ff99, transparent: true, opacity: 0.4 })
+    );
+    this.wallGhost.visible = false;
+    this.raft.group.add(this.wallGhost);
+
+    // 渔网幽灵：与实体一致（带圆孔的木板 + 中空网圈），占一个空格子
+    this.netGhostMat = new THREE.MeshBasicMaterial({
+      color: 0x66ff99, transparent: true, opacity: 0.4, side: THREE.DoubleSide,
+    });
+    this.netGhost = new THREE.Group();
+    const nbase = new THREE.Mesh(this._netPlateGeometry(this.raft.tileSize), this.netGhostMat);
+    const nnet = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.9, 0.9, 0.25, 24, 1, true),
+      this.netGhostMat
+    );
+    nnet.position.y = 0.05;
+    this.netGhost.add(nbase, nnet);
+    this.netGhost.visible = false;
+    this.raft.group.add(this.netGhost);
+
+    this.buildMode = null;   // 建造模式：'tile'（木筏格子）/ 'wall'（木墙）/ 'net'（渔网）/ 'sail'（船帆）
+    this.buildTarget = null; // 当前建造目标 { type, ok, reason, ... }
     this.buildings = []; // 已建建筑：[{ type, x, z }]（x/z 为木筏局部坐标）
+    // 木墙/渔网的网格、可踩甲板与碰撞统一由 Raft 维护
+    // （见 Raft.addWall / Raft.resolveWalls / Raft.addNetCell）
   }
 
   _recipe(id) {
@@ -126,6 +151,7 @@ export class Game {
       return false;
     }
     this.buildMode = id;
+    this.buildTarget = null; // 切换建造模式时清空上一模式的目标
     const ok = this.crafting.canCraft(r);
     this._flash(ok
       ? `可以建造：${r.name}（${this._costText(r)}）左键放置，右键/Esc 取消`
@@ -138,6 +164,8 @@ export class Game {
     this.buildTarget = null;
     this.ghost.visible = false;
     this.sailGhost.visible = false;
+    this.wallGhost.visible = false;
+    this.netGhost.visible = false;
   }
 
   _setupTools() {
@@ -178,24 +206,31 @@ export class Game {
     this.hookLine.visible = false;
     this.scene.add(this.hookLine);
 
-    // 木筏建筑：已放置的渔网列表 + 自动收集计时
+    // 木筏建筑：已放置的渔网列表（每个渔网自带储物格）
     this.placedNets = [];
-    this.netTimer = 0;
   }
 
   _bindInteractions() {
     document.addEventListener('keydown', (e) => {
       if (e.code === 'KeyV') this.thirdPerson = !this.thirdPerson; // 切换第一/三人称
-      // E：调整航向时确认；否则瞄准船帆时打开互动面板
+      // E：调整航向时确认；否则瞄准船帆/渔网时打开对应面板
       if (e.code === 'KeyE') {
-        if (this.aimingSail) this.confirmSailAim();
-        else if (!this.ui.openPanel && this._aimAtSail()) this.ui.toggleSailPanel();
+        if (this.aimingSail) {
+          this.confirmSailAim();
+        } else if (!this.ui.openPanel) {
+          if (this._aimAtSail()) this.ui.toggleSailPanel();
+          else {
+            const net = this._aimAtNet();
+            if (net) this.ui.toggleNetPanel(net);
+          }
+        }
       }
       if (e.code === 'Escape') {
-        // Esc：先取消定航向 → 再关面板 → 最后退出建造模式
+        // Esc：取消定航向 → 关面板 → 退出建造模式 → 离木筏太远时询问是否传送回去
         if (this.aimingSail) this.cancelSailAim();
         else if (this.ui.openPanel) this.ui.closePanels();
-        else this.cancelBuild();
+        else if (this.buildMode) this.cancelBuild();
+        else this._tryRescuePrompt();
       }
     });
     document.addEventListener('mousedown', (e) => {
@@ -239,7 +274,9 @@ export class Game {
   _onLeftDown() {
     if (!this.player.locked) return;
     if (this.aimingSail) { this.confirmSailAim(); return; } // 调整航向：左键确认
-    if (this.buildMode === 'tile') { this._tryBuild(); return; }
+    if (this.buildMode === 'tile') { this._tryBuildTile(); return; }
+    if (this.buildMode === 'wall') { this._tryBuildWall(); return; }
+    if (this.buildMode === 'net') { this._tryBuildNet(); return; }
     if (this.buildMode === 'sail') { this._tryBuildSail(); return; }
     if (this.toolCooldown > 0) return;
     if (this.equipped === 'fishing_rod' || this.equipped === 'hook_lock') {
@@ -515,6 +552,34 @@ export class Game {
     this._flash('已取消调整船帆航向', 1.5);
   }
 
+  // —— 保底机制：离木筏超过 CFG.rescueRange 时，按 Esc 可选择传送回木筏 ——
+  raftDistance() {
+    return this.raft.distanceTo(this.player.pos.x, this.player.pos.z);
+  }
+
+  isFarFromRaft() {
+    return this.raftDistance() > CFG.rescueRange;
+  }
+
+  // Esc（无面板/无建造/未在定航向时）：距离过远才弹出传送确认
+  _tryRescuePrompt() {
+    if (!this.isFarFromRaft()) return;
+    this.ui.openRescuePanel();
+  }
+
+  // 传送回木筏中心格，清空速度与腾空状态，并立即贴合相机
+  teleportToRaft() {
+    const [gx, gz] = this.raft.centerTile();
+    const [wx, wz] = this.raft.gridToWorld(gx, gz);
+    this.player.pos.set(wx, this.raft.group.position.y + this.player.eye, wz);
+    this.player.vel.set(0, 0, 0);
+    this.player.airborne = false;
+    this.player.grounded = true;
+    this.camera.position.copy(this.player.pos); // 立即贴合，避免一帧拉丝
+    this.ui.closePanels();
+    this._flash('已传送回木筏', 1.5);
+  }
+
   // yaw → 八方位文字（0°=北，顺时针），用于船帆航向提示
   _headingText(yaw) {
     const deg = ((-yaw * 180 / Math.PI) % 360 + 360) % 360;
@@ -522,9 +587,11 @@ export class Game {
     return `${names[Math.round(deg / 45) % 8]}（${Math.round(deg)}°）`;
   }
 
-  // 右键：瞄准船帆时打开互动面板；否则拾取「瞄准（视角前方）且近距离」的漂浮物
+  // 右键：瞄准船帆/渔网时打开对应面板；否则拾取「瞄准（视角前方）且近距离」的漂浮物
   _tryPickup() {
     if (this._aimAtSail()) { this.ui.toggleSailPanel(); return; }
+    const net = this._aimAtNet();
+    if (net) { this.ui.toggleNetPanel(net); return; }
     const fwd = this._forward();
     let best = null, bestD = 3.0;
     for (const it of this.resources.items) {
@@ -540,15 +607,67 @@ export class Game {
     this.ui.refreshCounts();
   }
 
-  _tryBuild() {
-    // 找到玩家所在格相邻的空格用于扩建
-    const cell = this.raft.nearestEmptyNeighbor(this.player.pos.x, this.player.pos.z);
-    if (!cell) { this._flash('附近没有可扩建的位置', 1.2); return; }
-    if (!this.inventory.consume('lumber', 2)) {
-      this.ui.setPrompt('需要 2木材来扩建木筏');
-      return;
+  // —— 建造定位：所有木筏建筑共用同一套网格判定 ——
+  // 准星命中点（世界坐标）及其所在格；未命中木筏时退化为玩家所在位置
+  _aimInfo() {
+    const p = this._pickRaftPoint();
+    const x = p ? p.x : this.player.pos.x;
+    const z = p ? p.z : this.player.pos.z;
+    const [gx, gz] = this.raft.worldToGrid(x, z);
+    return { gx, gz, x, z, hit: !!p };
+  }
+
+  // 偏移方向：准星命中点相对该格中心的四正方向（东/西/南/北），与玩家朝向无关
+  _offsetDir(gx, gz, x, z) {
+    const [cx, cz] = this.raft.gridToWorld(gx, gz);
+    const dx = x - cx, dz = z - cz;
+    if (Math.abs(dx) < 1e-3 && Math.abs(dz) < 1e-3) {
+      // 正对格心（偏移量为 0，无法判定）：按视线水平主轴兜底
+      const f = this._forward();
+      return Math.abs(f.x) >= Math.abs(f.z)
+        ? { dx: Math.sign(f.x) || 1, dz: 0 }
+        : { dx: 0, dz: Math.sign(f.z) || 1 };
     }
-    this.raft.addTile(cell[0], cell[1]);
+    return Math.abs(dx) >= Math.abs(dz)
+      ? { dx: Math.sign(dx), dz: 0 }
+      : { dx: 0, dz: Math.sign(dz) };
+  }
+
+  // 当前建造目标：准星格 (gx,gz) + 格内偏移方向 (dx,dz) → 相邻格 (cx,cz)
+  _targetCell() {
+    const a = this._aimInfo();
+    const d = this._offsetDir(a.gx, a.gz, a.x, a.z);
+    return {
+      gx: a.gx, gz: a.gz, dx: d.dx, dz: d.dz,
+      cx: a.gx + d.dx, cz: a.gz + d.dz, hit: a.hit,
+    };
+  }
+
+  _dirText(dx, dz) {
+    if (dx > 0) return '东';
+    if (dx < 0) return '西';
+    return dz > 0 ? '南' : '北';
+  }
+
+  // 取当前模式对应的建造目标（极快点击时先用当前准星刷新一次）
+  _targetFor(mode) {
+    if (!this.buildTarget || this.buildTarget.type !== mode) this._updateBuildPreview();
+    return this.buildTarget;
+  }
+
+  // 按配方扣料
+  _consumeRecipe(id) {
+    const r = this._recipe(id);
+    Object.entries(r.cost).forEach(([k, n]) => this.inventory.consume(k, n));
+    return r;
+  }
+
+  _tryBuildTile() {
+    const b = this._targetFor('tile');
+    if (!b || b.cx === undefined) { this._flash('无法建造（请瞄准木筏格子）', 1.2); return; }
+    if (!b.ok) { this._flash(`无法建造（${b.reason}）`, 1.2); return; }
+    this._consumeRecipe('tile');
+    this.raft.addTile(b.cx, b.cz);
     // 建造模式保留，可连续扩建；右键/Esc 退出
     this._flash(this.buildMode === 'tile' ? '扩建完成（右键/Esc 退出建造）' : '扩建完成', 1.0);
     this.ui.refreshCounts();
@@ -561,7 +680,8 @@ export class Game {
     this.raft.group.updateMatrixWorld(true);
     const ray = new THREE.Raycaster();
     ray.setFromCamera(new THREE.Vector2(0, 0), this.camera);
-    const hit = ray.intersectObjects([...this.raft.tiles.values()], false)[0];
+    // 木筏格子 + 渔网都可作为建造基准（渔网是 Group，需递归检测其子网格）
+    const hit = ray.intersectObjects(this.raft.aimTargets(), true)[0];
     if (!hit) return null;
     return { x: hit.point.x, z: hit.point.z };
   }
@@ -581,26 +701,58 @@ export class Game {
     return false;
   }
 
-  // 建造预览：按建造模式刷新幽灵格/船帆幽灵，并记录目标是否可建造
+  // 建造预览：按建造模式刷新对应的幽灵体，并记录目标是否可建造
   _updateBuildPreview() {
-    if (this.buildMode !== 'tile') this.ghost.visible = false;
-    if (this.buildMode !== 'sail') this.sailGhost.visible = false;
+    const mode = this.buildMode;
+    if (mode !== 'tile') this.ghost.visible = false;
+    if (mode !== 'wall') this.wallGhost.visible = false;
+    if (mode !== 'net') this.netGhost.visible = false;
+    if (mode !== 'sail') this.sailGhost.visible = false;
     this.buildTarget = null;
-    if (!this.buildMode) return;
+    if (!mode) return;
 
-    if (this.buildMode === 'tile') {
-      const cell = this.raft.nearestEmptyNeighbor(this.player.pos.x, this.player.pos.z);
-      if (!cell) {
+    // 网格类建筑（木筏格子 / 木墙 / 渔网）：准星格 + 偏移方向
+    if (mode === 'tile' || mode === 'wall' || mode === 'net') {
+      const t = this._targetCell();
+      // 偏移方向取决于准星落在格子上的位置，因此必须瞄准木筏格子
+      if (!t.hit) {
         this.ghost.visible = false;
-        this.buildTarget = { cell: null, ok: false, reason: '附近没有可扩建的位置' };
+        this.wallGhost.visible = false;
+        this.netGhost.visible = false;
+        this.buildTarget = { type: mode, ...t, ok: false, reason: '请瞄准木筏格子' };
         return;
       }
-      const [lx, lz] = this.raft.gridToLocal(cell[0], cell[1]);
-      this.ghost.position.set(lx, -0.15, lz);
-      const ok = this.crafting.canCraft(this._recipe('tile'));
-      this.ghost.material.color.set(ok ? 0x00ff88 : 0xff4444);
-      this.ghost.visible = true;
-      this.buildTarget = { cell, ok, reason: ok ? '' : '材料不足' };
+      let reason = '';
+      if (mode === 'tile') {
+        if (this.raft.hasTile(t.cx, t.cz)) reason = '该位置已有木筏';
+        else if (this.raft.hasNetCell(t.cx, t.cz)) reason = '该位置已有渔网';
+      } else if (mode === 'wall') {
+        if (this.raft.hasWall(t.gx, t.gz, t.dx, t.dz)) reason = '该位置已有木墙';
+      } else {
+        // 渔网与木筏格子共用网格：只能放在空格子上（不与木筏格子重叠），且一格一张
+        if (this.raft.hasTile(t.cx, t.cz)) reason = '该位置已有木筏';
+        else if (this.raft.hasNetCell(t.cx, t.cz)) reason = '该位置已有渔网';
+      }
+      if (!reason && !this.crafting.canCraft(this._recipe(mode))) reason = '材料不足';
+      const ok = !reason;
+      if (mode === 'tile') {
+        const [lx, lz] = this.raft.gridToLocal(t.cx, t.cz);
+        this.ghost.position.set(lx, -0.15, lz);
+        this.ghost.material.color.set(ok ? 0x00ff88 : 0xff4444);
+        this.ghost.visible = true;
+      } else if (mode === 'wall') {
+        const p = this.raft.wallPose(t.gx, t.gz, t.dx, t.dz);
+        this.wallGhost.position.set(p.x, 0.8, p.z);
+        this.wallGhost.rotation.y = p.rotY;
+        this.wallGhost.material.color.set(ok ? 0x00ff88 : 0xff4444);
+        this.wallGhost.visible = true;
+      } else {
+        const [lx, lz] = this.raft.gridToLocal(t.cx, t.cz);
+        this.netGhost.position.set(lx, 0, lz);
+        this.netGhostMat.color.set(ok ? 0x00ff88 : 0xff4444);
+        this.netGhost.visible = true;
+      }
+      this.buildTarget = { type: mode, ...t, ok, reason };
       return;
     }
 
@@ -608,7 +760,7 @@ export class Game {
     const point = this._pickRaftPoint();
     if (!point) {
       this.sailGhost.visible = false;
-      this.buildTarget = { point: null, ok: false, reason: '超出木筏' };
+      this.buildTarget = { type: 'sail', point: null, ok: false, reason: '超出木筏' };
       return;
     }
     const lx = point.x - this.raft.offset.x; // 转成木筏局部坐标（随筏漂移）
@@ -623,17 +775,37 @@ export class Game {
     this.sailGhost.position.set(lx, 0, lz);
     this.sailGhostMat.color.set(ok ? 0x00ff88 : 0xff4444);
     this.sailGhost.visible = true;
-    this.buildTarget = { point: { x: lx, z: lz }, ok, reason };
+    this.buildTarget = { type: 'sail', point: { x: lx, z: lz }, ok, reason };
+  }
+
+  // 木墙：贴在该格朝偏移方向（东/西/南/北）的边缘，墙面朝向偏移方向
+  _tryBuildWall() {
+    const b = this._targetFor('wall');
+    if (!b || b.gx === undefined) { this._flash('无法建造（请瞄准木筏格子）', 1.2); return; }
+    if (!b.ok) { this._flash(`无法建造（${b.reason}）`, 1.2); return; }
+    if (this.raft.hasWall(b.gx, b.gz, b.dx, b.dz)) { this._flash('无法建造（该位置已有木墙）', 1.2); return; }
+    this._consumeRecipe('wall');
+    this._createWall(b.gx, b.gz, b.dx, b.dz);
+    this._flash(`木墙建造完成（格子${this._dirText(b.dx, b.dz)}侧，可阻挡通行）`, 1.5);
+    this.ui.refreshCounts();
+  }
+
+  // 渔网：与木筏格子同一套网格，只能建在空格子上（不与木筏格子重叠）
+  _tryBuildNet() {
+    const b = this._targetFor('net');
+    if (!b || b.cx === undefined) { this._flash('无法建造（请瞄准木筏格子）', 1.2); return; }
+    if (!b.ok) { this._flash(`无法建造（${b.reason}）`, 1.2); return; }
+    this._consumeRecipe('net');
+    this._createNet(b.cx, b.cz);
+    this._flash('渔网建造完成：碰到漂浮物会直接收进储物格，右键渔网可取货', 2.2);
+    this.ui.refreshCounts();
   }
 
   _tryBuildSail() {
-    if (!this.buildTarget) this._updateBuildPreview(); // 极快点击时先用当前准星刷新目标
-    const b = this.buildTarget;
+    const b = this._targetFor('sail');
     if (!b || !b.point) { this._flash('无法建造（超出木筏）', 1.2); return; }
     if (!b.ok) { this._flash(`无法建造（${b.reason}）`, 1.2); return; }
-    const r = this._recipe('sail');
-    if (!this.crafting.canCraft(r)) { this._flash('无法建造（材料不足）', 1.2); return; }
-    Object.entries(r.cost).forEach(([id, n]) => this.inventory.consume(id, n));
+    this._consumeRecipe('sail');
     if (!this.raft.addSail(b.point.x, b.point.z)) {
       this._flash('已建造船帆，无法重复建造', 1.5);
       return;
@@ -646,21 +818,9 @@ export class Game {
 
   onCraft(recipe) {
     if (recipe.structural) {
-      // 所有木筏建筑（木筏格子/木墙/渔网/船帆）均需手持建造锤方可放置
-      if (this.equipped !== 'build_hammer') {
-        this.ui.setPrompt('需手持建造锤才能建造');
-        return;
-      }
-      if (recipe.id === 'tile') {
-        const cell = this.raft.nearestEmptyNeighbor(this.player.pos.x, this.player.pos.z);
-        if (cell) this.raft.addTile(cell[0], cell[1]);
-      } else if (recipe.id === 'wall') {
-        this._placeWall();
-      } else if (recipe.id === 'net') {
-        this._placeNet();
-      } else if (recipe.id === 'sail') {
-        this.raft.addSail();
-      }
+      // 木筏建筑（木筏格子/木墙/渔网/船帆）统一走建造模式（place=true），不会直接到这里；
+      // 兜底：若被直接调用，只做材料提示，避免绕过网格判定乱放。
+      this.ui.setPrompt('请手持建造锤，在建造菜单中选择该建筑');
     } else if (recipe.output) {
       // 产出类：把结果物品加入背包（含工具类道具）
       this.inventory.add(recipe.output.id, recipe.output.n);
@@ -668,52 +828,265 @@ export class Game {
     this.ui.refreshCounts();
   }
 
-  _placeWall() {
-    const [gx, gz] = this.raft.worldToGrid(this.player.pos.x, this.player.pos.z);
-    const [wx, wz] = this.raft.gridToLocal(gx, gz);
-    const wall = new THREE.Mesh(
-      new THREE.BoxGeometry(1.8, 1.6, 0.3),
-      new THREE.MeshStandardMaterial({ color: 0x6f4a22, roughness: 1 })
-    );
-    wall.position.set(wx, 0.8, wz);
-    wall.castShadow = true;
-    this.raft.group.add(wall);
-    this.buildings.push({ type: 'wall', x: wx, z: wz }); // 记录位置，避免船帆重叠
+  // 生成木墙：贴在目标格朝 (dx,dz) 方向的边上，薄边与偏移方向对齐。
+  // 网格/模型/碰撞体都由 Raft 维护（Raft.addWall），玩家撞墙由 Raft.resolveWalls 推出。
+  _createWall(gx, gz, dx, dz) {
+    const wall = this.raft.addWall(gx, gz, dx, dz);
+    if (!wall) return null;
+    this.buildings.push({ type: 'wall', x: wall.lx, z: wall.lz }); // 记录位置，避免船帆重叠
+    return wall;
   }
 
-  // 渔网作为木筏建筑：放置在玩家当前所在格，挂在 raft.group 下随木筏一起漂移，
-  // 并在主循环中自动收集附近漂浮物（见 _updateNets）。
-  _placeNet() {
-    const [gx, gz] = this.raft.worldToGrid(this.player.pos.x, this.player.pos.z);
+  // 渔网外框木板：与木筏格同尺寸，但中间挖掉一圈与网圈同直径的圆孔（圆圈内部空心）
+  _netPlateGeometry(size) {
+    const half = (size * 0.99) / 2;
+    const shape = new THREE.Shape();
+    shape.moveTo(-half, -half);
+    shape.lineTo(half, -half);
+    shape.lineTo(half, half);
+    shape.lineTo(-half, half);
+    shape.closePath();
+    const hole = new THREE.Path();
+    hole.absarc(0, 0, 0.92, 0, Math.PI * 2, true);
+    shape.holes.push(hole);
+    const geo = new THREE.ExtrudeGeometry(shape, { depth: 0.3, bevelEnabled: false, curveSegments: 28 });
+    geo.rotateX(-Math.PI / 2); // 平放：挤出方向 +Z → +Y
+    geo.translate(0, -0.3, 0); // 顶面拉到 y=0，与木筏格高度一致
+    return geo;
+  }
+
+  // 生成渔网：占一个空格子（与木筏格子同一网格），挂在 raft.group 下随木筏漂移。
+  // 外形 = 与木筏格子一致但在中间开了圆孔的外框木板 + 内部中空的网圈（圆圈内部空心）。
+  // 每个渔网自带一个储物格 storage（与背包同样的 16 格 + 同样堆叠上限）。
+  _createNet(gx, gz) {
     const [lx, lz] = this.raft.gridToLocal(gx, gz);
-    const net = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.9, 0.9, 0.25, 16),
-      new THREE.MeshStandardMaterial({ color: 0xeeeeee, roughness: 1, transparent: true, opacity: 0.75 })
+
+    const group = new THREE.Group();
+    group.position.set(lx, 0, lz);
+
+    // 外部：带圆孔的木板（尺寸/高度/颜色与木筏格一致）
+    const base = new THREE.Mesh(
+      this._netPlateGeometry(this.raft.tileSize),
+      new THREE.MeshStandardMaterial({ color: 0x8a5a2b, roughness: 0.9 })
     );
-    net.position.set(lx, 0.15, lz);
-    net.castShadow = true;
-    this.raft.group.add(net);
+    base.receiveShadow = true;
+    base.castShadow = true;
+
+    // 内部：中空的网圈（开口圆柱，无上下盖，中间透空可看到水面）
+    const mesh = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.9, 0.9, 0.25, 24, 1, true),
+      new THREE.MeshStandardMaterial({
+        color: 0xeeeeee, roughness: 1, transparent: true, opacity: 0.7, side: THREE.DoubleSide,
+      })
+    );
+    mesh.position.y = 0.05;
+    mesh.castShadow = true;
+
+    // 圈口加一圈白色绳边，强化"网圈"外观
+    const rim = new THREE.Mesh(
+      new THREE.TorusGeometry(0.9, 0.05, 6, 28),
+      new THREE.MeshStandardMaterial({ color: 0xf5f5f5, roughness: 1 })
+    );
+    rim.rotation.x = -Math.PI / 2;
+    rim.position.y = 0.18;
+    rim.castShadow = true;
+
+    // 空心处的"展示位"：有物品时在这里摆出对应的模型（每种物品只摆一个）
+    const showcase = new THREE.Group();
+    showcase.position.y = 0.02;
+
+    group.add(base, mesh, rim, showcase);
+    this.raft.group.add(group);
+    this.raft.addNetCell(gx, gz, group); // 注册为可踩/可瞄准的甲板格
+
+    const net = {
+      gx, gz,
+      group, mesh, showcase,
+      storage: new Array(PACK_SIZE).fill(null), // 储物格：{ id, n } 或 null（与背包一致的格子与堆叠）
+      timer: 0,                                 // 自动产出计时
+    };
     this.placedNets.push(net);
     this.buildings.push({ type: 'net', x: lx, z: lz }); // 记录位置，避免船帆重叠
+    return net;
   }
 
-  // 木筏上的渔网定期自动收集半径内的漂浮物
+  // 渔网逻辑：
+  //  1) 碰到漂浮物即吸入，立刻变成对应物品存进该网自己的储物格（储物格满则留在水面上）；
+  //  2) 每隔 CFG.netAutoItemInterval 秒自动产出一件随机的「漂浮物对应物品」存进储物格。
   _updateNets(dt) {
     if (this.placedNets.length === 0) return;
-    this.netTimer -= dt;
-    if (this.netTimer > 0) return;
-    this.netTimer = 1.5; // 每 1.5 秒收集一次
-    const R = 6, R2 = R * R;
-    let got = 0;
+    const R = CFG.netContactRadius ?? 1.2;
+    const R2 = R * R;
+    const step = Math.max(0.2, CFG.netAutoItemInterval ?? 3);
+    const pool = Object.keys(TYPES); // 可漂浮的资源种类（塑料/木材/水果/树叶…）
+    let changed = false;
     for (const net of this.placedNets) {
-      const wx = this.raft.group.position.x + net.position.x;
-      const wz = this.raft.group.position.z + net.position.z;
+      // —— 1) 接触吸入 —— 网心世界坐标直接由格子换算
+      const [wx, wz] = this.raft.gridToWorld(net.gx, net.gz);
       for (const it of this.resources.items.slice()) {
-        const dx = it.mesh.position.x - wx, dz = it.mesh.position.z - wz;
-        if (dx * dx + dz * dz <= R2) { this.resources.collect(it); got++; }
+        if (it.pulling) continue; // 钩锁正在拉回的不抢
+        const ix = it.mesh.position.x, iz = it.mesh.position.z;
+        const [igx, igz] = this.raft.worldToGrid(ix, iz);
+        const inCell = igx === net.gx && igz === net.gz;
+        const dx = ix - wx, dz = iz - wz;
+        if (!inCell && dx * dx + dz * dz > R2) continue;
+        // 储物格放不下：本次不吸入，漂浮物继续留在水面上
+        if (this._storeNetItem(net, it.type, 1) > 0) continue;
+        this.resources.absorb(it);
+        changed = true;
+      }
+
+      // —— 2) 定时自动产出：每过一段时间随机生成一件漂浮物对应的物品 ——
+      net.timer += dt;
+      while (net.timer >= step) {
+        const id = pool[(Math.random() * pool.length) | 0];
+        if (this._storeNetItem(net, id, 1) > 0) { net.timer = step; break; } // 储物格满：等腾出空间再继续
+        net.timer -= step;
+        changed = true;
+      }
+
+      // 3) 空心处的展示模型跟随储物内容变化
+      if (this._syncNetShowcase(net)) changed = true;
+    }
+    if (changed && this.ui.openPanel === 'net') this.ui.renderNet();
+  }
+
+  // 储物内容（物品种类）变化时才重建展示模型，返回是否发生了重建
+  _syncNetShowcase(net) {
+    if (!net.showcase) return false;
+    const ids = new Set();
+    for (const s of net.storage) if (s) ids.add(s.id);
+    const sig = [...ids].sort().join(',');
+    if (sig === net._showcaseSig) return false;
+    net._showcaseSig = sig;
+    this._refreshNetShowcase(net);
+    return true;
+  }
+
+  // 渔网红心展示：储物格里每种物品只摆一个模型（不同物品全部显示）。
+  // 增量更新——已存在的模型保持原来的位置与朝向不变，只增删有变化的种类；
+  // 新出现的模型在空心圆内随机位置、三轴随机朝向，静止不旋转、无碰撞。
+  _refreshNetShowcase(net) {
+    const box = net.showcase;
+    if (!box) return;
+    if (!net.showcaseItems) net.showcaseItems = new Map(); // id -> mesh
+    const shown = net.showcaseItems;
+
+    const ids = new Set();
+    for (const s of net.storage) if (s) ids.add(s.id);
+
+    // 1) 储物里已没有的种类：移除模型
+    for (const [id, m] of shown) {
+      if (ids.has(id)) continue;
+      box.remove(m);
+      shown.delete(id);
+    }
+
+    // 2) 新出现的种类：新建模型（已有的不动）
+    const placed = [...shown.values()].map((m) => m.position);
+    for (const id of ids) {
+      if (shown.has(id)) continue;
+      const def = TYPES[id];
+      const tpl = def && def.model ? this.resources.foodTemplates[def.model] : null;
+      let m;
+      if (tpl) {
+        m = tpl.clone(true); // 复用漂浮物的模型模板
+      } else {
+        // 没有模型模板时退化成一个同色小方块，至少能看出网里有东西
+        m = new THREE.Mesh(
+          new THREE.BoxGeometry(0.5, 0.3, 0.5),
+          new THREE.MeshStandardMaterial({ color: def ? def.color : 0xcccccc })
+        );
+      }
+      const sc = (CFG.floatScale?.[id] ?? 1) * 0.85;
+      m.scale.setScalar(sc);
+
+      // 在空心圆内随机找一个不和已有模型挤在一起的位置
+      let px = 0, pz = 0;
+      for (let i = 0; i < 10; i++) {
+        const ang = Math.random() * Math.PI * 2;
+        const rad = Math.random() * 0.45;
+        px = Math.cos(ang) * rad;
+        pz = Math.sin(ang) * rad;
+        if (placed.every((p) => Math.hypot(p.x - px, p.z - pz) > 0.32)) break;
+      }
+      m.position.set(px, 0.02, pz);
+      // 三个轴都随机朝向
+      m.rotation.set(
+        Math.random() * Math.PI * 2,
+        Math.random() * Math.PI * 2,
+        Math.random() * Math.PI * 2
+      );
+      m.castShadow = true;
+      m.receiveShadow = true;
+      box.add(m);
+      shown.set(id, m);
+      placed.push(m.position);
+    }
+  }
+
+  // 把物品放进渔网储物格（堆叠上限与玩家背包一致），返回放不下的数量
+  _storeNetItem(net, id, n = 1) {
+    const max = this.inventory.maxStack(id);
+    let remain = n;
+    for (const s of net.storage) {
+      if (s && s.id === id && s.n < max) {
+        const put = Math.min(max - s.n, remain);
+        s.n += put; remain -= put;
+        if (remain <= 0) return 0;
       }
     }
-    if (got > 0) { this.ui.refreshCounts(); this._flash(`🕸️ 渔网收集到 ${got} 件`, 1.2); }
+    for (let i = 0; i < net.storage.length; i++) {
+      if (!net.storage[i]) {
+        const put = Math.min(max, remain);
+        net.storage[i] = { id, n: put }; remain -= put;
+        if (remain <= 0) return 0;
+      }
+    }
+    return remain; // 储物格已满
+  }
+
+  // 从渔网某一格取出物品放入背包（背包放不下的部分留在网里）
+  takeNetItem(net, idx) {
+    const s = net.storage[idx];
+    if (!s) return;
+    const named = ITEMS[s.id]?.name || s.id;
+    const left = this.inventory.add(s.id, s.n);
+    const taken = s.n - left;
+    if (taken <= 0) { this._flash(`背包已满，无法取出${named}`, 1.2); return; }
+    if (left > 0) s.n = left; else net.storage[idx] = null;
+    this._flash(`取出 ${named} x${taken}`, 1.2);
+    this.ui.refreshCounts();
+    if (this.ui.openPanel === 'net') this.ui.renderNet();
+  }
+
+  // 一键取出渔网内全部物品
+  takeAllNetItems(net) {
+    let moved = 0;
+    for (let i = 0; i < net.storage.length; i++) {
+      const s = net.storage[i];
+      if (!s) continue;
+      const left = this.inventory.add(s.id, s.n);
+      moved += s.n - left;
+      if (left > 0) s.n = left; else net.storage[i] = null;
+    }
+    this._flash(moved > 0 ? `取出 ${moved} 件物品` : '背包已满或渔网为空', 1.2);
+    this.ui.refreshCounts();
+    if (this.ui.openPanel === 'net') this.ui.renderNet();
+  }
+
+  // 准星是否瞄准渔网（近距离）——用于右键打开渔网储物面板
+  _aimAtNet() {
+    if (this.placedNets.length === 0) return null;
+    this.camera.updateMatrixWorld();
+    this.raft.group.updateMatrixWorld(true);
+    const ray = new THREE.Raycaster();
+    ray.setFromCamera(new THREE.Vector2(0, 0), this.camera);
+    // 渔网现在是 Group（外框木板 + 网本体），需要递归检测其子网格
+    const hit = ray.intersectObjects(this.placedNets.map((n) => n.group), true)[0];
+    if (!hit || hit.distance > 4.5) return null;
+    const owner = (o) => { while (o) { const n = this.placedNets.find((p) => p.group === o); if (n) return n; o = o.parent; } return null; };
+    return owner(hit.object);
   }
 
   _resize() {
@@ -783,8 +1156,13 @@ export class Game {
       prompt = this.toolMsg;
     } else {
       const near = this.resources.nearest(this.player.pos);
-      if (!this.buildMode && this._aimAtSail()) {
+      const aimSail = !this.buildMode && this._aimAtSail();
+      const aimNet = (!this.buildMode && !aimSail) ? this._aimAtNet() : null;
+      if (aimSail) {
         prompt = '右键/E 操作船帆（开/收帆、调整航向）';
+      } else if (aimNet) {
+        const n = aimNet.storage.reduce((a, s) => a + (s ? s.n : 0), 0);
+        prompt = `右键/E 打开渔网（储物 ${n} 件）`;
       } else if (near) {
         prompt = `右键 拾取 ${this._label(near.type)}`;
       } else if (this.buildMode && this.buildTarget) {
@@ -795,6 +1173,8 @@ export class Game {
           const r = this._recipe(this.buildMode);
           prompt = `左键 放置${r.name}（${this._costText(r)}）　右键/Esc 取消`;
         }
+      } else if (this.isFarFromRaft()) {
+        prompt = '⚠ 已远离木筏：按 Esc 可选择传送回木筏';
       }
     }
     this.ui.setPrompt(prompt);

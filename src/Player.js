@@ -73,6 +73,9 @@ export class Player {
     // 面板打开（frozen）时忽略 WASD 输入，玩家无法自主移动（仍随木筏漂移）
     if (frozen) move.set(0, 0, 0);
     if (move.lengthSq() > 0) move.normalize().multiplyScalar(sp * dt);
+    // 碰撞扫掠用：本帧位移前的世界位置，再加上木筏本帧位移（墙体随筏一起移动）
+    const prevX = this.pos.x + this.raft.delta.x;
+    const prevZ = this.pos.z + this.raft.delta.z;
     this.pos.add(move);
 
     // 站在木筏上、以及整个跳跃腾空期间，都随木筏漂移一起运动：
@@ -84,6 +87,11 @@ export class Player {
       this.pos.x += this.raft.delta.x;
       this.pos.z += this.raft.delta.z;
     }
+
+    // 木墙碰撞：把玩家（竖直圆柱）从墙体内推出，无法穿墙。
+    // 传入脚/头高度，使其只在人站在筏面高度时才挡人（游泳、跳得比墙高时不受影响）；
+    // 再传入上一帧位置用于扫掠，避免高速时一帧穿过薄墙。
+    this.raft.resolveWalls(this.pos, 0.35, this.pos.y - this.eye, this.pos.y + 0.2, prevX, prevZ);
 
     // 站立高度 / 跳跃：起跳时只判断是否在“着地”（grounded），
     // “是否在木筏内”留到落地那一刻再判断（落点在木筏上则停在筏顶，否则落水）。

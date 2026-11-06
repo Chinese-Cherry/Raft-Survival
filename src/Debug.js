@@ -43,6 +43,16 @@ export function createDebugPanel(game, raft, resources) {
   // —— 通用标量参数 ——
   addSlider('视野距离', CFG.viewDist, (v) => { CFG.viewDist = v; game.applyViewDist(v); }, 20, 250, 1);
 
+  // —— 木筏航行速度（对应 let.js 的 raftDriftSpeed / raftSailSpeed 等）——
+  const speedSep = document.createElement('div');
+  speedSep.textContent = '— 木筏航行速度 —';
+  speedSep.style.cssText = 'margin-top:10px;opacity:.7;';
+  panel.appendChild(speedSep);
+  addSlider('漂移速度', CFG.raftDriftSpeed, (v) => (CFG.raftDriftSpeed = v), 0.5, 8, 0.1);
+  addSlider('船帆速度上限', CFG.raftSailSpeed, (v) => (CFG.raftSailSpeed = v), 0.5, 12, 0.1);
+  addSlider('帆力爬升时间', CFG.sailRampTime, (v) => (CFG.sailRampTime = v), 0.5, 20, 0.5);
+  addSlider('船帆转向速度', CFG.sailTurnSpeed, (v) => (CFG.sailTurnSpeed = v), 0.1, 3, 0.05);
+
   // —— 漂浮物大小（按类型单独可调）——
   const sep = document.createElement('div');
   sep.textContent = '— 漂浮物大小（按类型）—';
