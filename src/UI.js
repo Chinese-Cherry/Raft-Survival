@@ -35,6 +35,9 @@ export class UI {
 
     this.openPanel = null; // 当前打开的面板：'crafting' | 'backpack' | 'sail' | 'net' | null
     this.picked = null;    // 当前选中的格子：{ area: 'hotbar'|'pack'|'net', idx }
+    // 交互提示的自动消失计时（左上角游玩说明为静态内容，不走这里）
+    this._promptText = '';
+    this._promptUntil = 0;
 
     // 船帆互动面板：开/收帆、转向
     this.elSailToggle.addEventListener("click", () => {
@@ -56,6 +59,21 @@ export class UI {
     // 传送确认面板：传送回木筏 / 继续探索
     document.getElementById("rescue-confirm").addEventListener("click", () => this.game.teleportToRaft());
     document.getElementById("rescue-cancel").addEventListener("click", () => this._closePanels());
+
+    // 设置面板（Esc 暂停时打开）：每个音频通道一行，含开关与音量滑条
+    this.elSettings = document.getElementById("settings-panel");
+    document.getElementById("settings-resume").addEventListener("click", () => this._closePanels());
+    this.elSettings.querySelectorAll(".setting-row").forEach((row) => {
+      const ch = row.dataset.ch;
+      row.querySelector(".s-toggle").addEventListener("change", (e) => {
+        this.game.audio.setEnabled(ch, e.target.checked);
+        this._syncSettingRow(row);
+      });
+      row.querySelector(".s-vol").addEventListener("input", (e) => {
+        this.game.audio.setVolume(ch, +e.target.value / 100);
+        this._syncSettingRow(row);
+      });
+    });
 
     this.elOverlay.addEventListener("click", () => {
       if (this.openPanel) return;
@@ -177,7 +195,7 @@ export class UI {
     const p = this.picked;
     const box = p.area === 'hotbar' ? this.elHotbar
       : p.area === 'pack' ? this.elBackpackGrid
-      : this.elNetGrid;
+        : this.elNetGrid;
     const el = box && box.querySelector(`[data-idx="${p.idx}"]`);
     if (el) el.classList.add('picked');
   }
@@ -231,30 +249,49 @@ export class UI {
   }
 
   // 选中快捷栏格：格内是工具则装备，切到其他格（空/非工具）则卸下。
+  // 任意面板（含 Esc 暂停设置）打开时都不允许切换，避免误触改变选中物品。
   selectSlot(i) {
+    if (this.openPanel) return;
     if (i < 0 || i >= HOTBAR_SIZE) return;
     this.activeSlot = i;
     this.syncMainHand(); // 格内是工具则装备，空/普通物品则卸下
     this.renderHotbar();
   }
 
-  setPrompt(text) {
-    if (text) {
+  // 交互提示：显示一段时间后自动消失（约 3 秒）。
+  // 相同文本不会每帧续期；文本变化或 force=true 时重新计时。
+  setPrompt(text, force = false) {
+    if (!text) {
+      this.elPrompt.style.display = "none";
+      this._promptText = '';
+      return;
+    }
+    const now = performance.now();
+    if (force || text !== this._promptText) {
+      this._promptText = text;
+      this._promptUntil = now + 3000;
+    }
+    if (now < this._promptUntil) {
       this.elPrompt.style.display = "block";
       this.elPrompt.textContent = text;
-    } else this.elPrompt.style.display = "none";
+    } else {
+      this.elPrompt.style.display = "none";
+    }
   }
 
   setEquipped(id) {
+    clearTimeout(this._equippedTimer);
     if (!id) { this.elEquipped.style.display = "none"; return; }
     const def = ITEMS[id];
     const hint = (id === 'hook_lock' || id === 'fishing_rod') ? '左键蓄力抛出'
-               : (id === 'build_hammer') ? '合成菜单选择建筑后放置'
-               : '左键 使用';
+      : (id === 'build_hammer') ? '合成菜单选择建筑后放置'
+        : '左键 使用';
     this.elEquipped.style.display = "block";
     // 装备提示只显示文字，避免图片以原始尺寸撑大遮挡游玩画面
     this.elEquipped.innerHTML =
       `<span class="key">[已装备]</span>${def.name}　<span style="opacity:.6">${hint}</span>`;
+    // 提示显示一段时间后自动消失
+    this._equippedTimer = setTimeout(() => { this.elEquipped.style.display = "none"; }, 1000);
   }
 
   // 蓄力条：p 为 0~1 的进度；传 null 隐藏。
@@ -291,6 +328,11 @@ export class UI {
       this.elBackpack.classList.add('with-net');
       this.elBackpack.style.display = 'block';
       this.renderBackpack();
+    } else if (which === 'settings') {
+      this.renderSettings();
+      this.elSettings.style.display = 'block';
+      this.game._settingsOpenedAt = performance.now(); // 供 Esc 去重
+      this.game.setPaused(true); // 打开设置即暂停游戏
     } else {
       this.elBackpack.style.display = 'block';
       this.renderBackpack();
@@ -300,11 +342,13 @@ export class UI {
   }
 
   _closePanels() {
+    const wasSettings = this.openPanel === 'settings';
     this.elCraft.style.display = 'none';
     this.elBackpack.style.display = 'none';
     this.elBackpack.classList.remove('with-net');
     if (this.elSail) this.elSail.style.display = 'none';
     if (this.elRescue) this.elRescue.style.display = 'none';
+    if (this.elSettings) this.elSettings.style.display = 'none';
     if (this.elNet) {
       this.elNet.style.display = 'none';
       this.elNet.classList.remove('with-backpack');
@@ -312,6 +356,7 @@ export class UI {
     this.currentNet = null;
     this.picked = null;
     this.openPanel = null;
+    if (wasSettings) this.game.setPaused(false); // 关闭设置即恢复游戏
     this.game.player.requestLock(); // 全部关闭后重新锁定指针
   }
 
@@ -327,6 +372,26 @@ export class UI {
     this._openPanel('backpack');
   }
   toggleSailPanel() { this._openPanel('sail'); }
+
+  // 暂停并打开设置面板（Esc 触发）
+  openSettings() { this._openPanel('settings'); }
+
+  // 用当前音频设置刷新面板上的开关与音量
+  renderSettings() {
+    this.elSettings.querySelectorAll(".setting-row").forEach((row) => {
+      const s = this.game.audio.getChannel(row.dataset.ch);
+      row.querySelector(".s-toggle").checked = s.enabled;
+      row.querySelector(".s-vol").value = Math.round(s.volume * 100);
+      this._syncSettingRow(row);
+    });
+  }
+
+  _syncSettingRow(row) {
+    const on = row.querySelector(".s-toggle").checked;
+    const pct = Math.round(+row.querySelector(".s-vol").value);
+    row.querySelector(".s-val").textContent = `${pct}%`;
+    row.classList.toggle("off", !on);
+  }
 
   // 保底机制：离木筏过远时由 Game 调用，弹出"是否传送回木筏"确认
   openRescuePanel() {

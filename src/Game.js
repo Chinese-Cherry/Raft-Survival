@@ -9,6 +9,13 @@ import { UI } from './UI.js';
 import { ITEMS } from './Items.js';
 import { CFG, START_ITEMS, START_EQUIPPED } from './let.js';
 import { buildPlayerModel } from '../models/player/player.js';
+import { AudioManager } from './Audio.js';
+
+// 手持物品 id → 模型模板名（未列出的物品没有模型，右手不显示任何东西）
+const HELD_MODELS = {
+  apple: 'apple', banana: 'banana', orange: 'orange',
+  plastic: 'plastic_sheet', lumber: 'wood_plank', leaf: 'leaf', rope: 'rope',
+};
 
 // 游戏主控：装配场景/渲染器/光照，组织各子系统并驱动主循环与交互。
 export class Game {
@@ -50,11 +57,18 @@ export class Game {
     this.scene.add(this.camera);            // 让挂在相机下的第一人称手臂可被渲染
     this.camera.add(this.playerModel.fp);
     this.thirdPerson = false;
+    // 音频系统：背景音乐 / 环境音 / 音效 / 界面音（ESC 设置面板中可分别开关与调音量）
+    this.audio = new AudioManager();
+    this.paused = false;
+    this.everStarted = false; // 是否已通过点击遮罩真正进入游戏（用于 Esc 暂停判断）
+    this._heldId = undefined; // 当前右手展示的物品 id（变化时才重建模型）
     this.ui = new UI(this.inventory, this.crafting, this);
 
     this._setupBuildGhost();
     this._setupTools();
     this._bindInteractions();
+    // 进入游戏即尝试播放背景音乐（被浏览器自动播放策略拦截时，首次点击/按键会重新启动）
+    this.audio.tryAutoplay();
     // 开局默认物品与默认装备（配置见 let.js 的 START_ITEMS / START_EQUIPPED）
     // START_ITEMS() 返回 Map，需直接迭代（Object.entries 对 Map 只会得到空数组）
     for (const [id, n] of START_ITEMS()) {
@@ -77,6 +91,18 @@ export class Game {
     this.scene.fog.far = v;
     this.camera.far = v + 90;
     this.camera.updateProjectionMatrix();
+  }
+
+  // 暂停/恢复：暂停时冻结主循环的所有更新，仅继续渲染当前画面
+  setPaused(v) {
+    if (this.paused === v) return;
+    this.paused = v;
+    this.audio.setPaused(v); // 暂停时停止背景音乐，恢复时继续
+    if (v) {
+      this.charging = null;
+      this.ui.setCharge(null);
+      document.exitPointerLock?.();
+    }
   }
 
   _setupBuildGhost() {
@@ -212,6 +238,7 @@ export class Game {
 
   _bindInteractions() {
     document.addEventListener('keydown', (e) => {
+      this.audio.unlock(); // 首次按键属于用户手势：解锁音频
       if (e.code === 'KeyV') this.thirdPerson = !this.thirdPerson; // 切换第一/三人称
       // E：调整航向时确认；否则瞄准船帆/渔网时打开对应面板
       if (e.code === 'KeyE') {
@@ -226,14 +253,21 @@ export class Game {
         }
       }
       if (e.code === 'Escape') {
-        // Esc：取消定航向 → 关面板 → 退出建造模式 → 离木筏太远时询问是否传送回去
-        if (this.aimingSail) this.cancelSailAim();
+        // Esc：设置面板开 → 返回游戏；否则取消定航向 → 关面板 → 退出建造 → 远距离救援 → 暂停并打开设置
+        if (this.ui.openPanel === 'settings') {
+          // 同一次按键既触发本回调、又触发 pointerlockchange 兜底时，避免刚打开就被关闭
+          if (performance.now() - (this._settingsOpenedAt || 0) < 300) return;
+          this.ui.closePanels();
+        }
+        else if (this.aimingSail) this.cancelSailAim();
         else if (this.ui.openPanel) this.ui.closePanels();
         else if (this.buildMode) this.cancelBuild();
-        else this._tryRescuePrompt();
+        else if (this.isFarFromRaft()) this._tryRescuePrompt();
+        else if (this.everStarted) this.ui.openSettings();
       }
     });
     document.addEventListener('mousedown', (e) => {
+      this.audio.unlock(); // 首次点击属于用户手势：解锁音频
       if (this.ui.openPanel) return;
       if (e.button === 0) this._onLeftDown();  // 左键：使用道具（鱼竿/钩锁蓄力） / 建造
       if (e.button === 2) {
@@ -246,6 +280,14 @@ export class Game {
       if (e.button === 0) this._onLeftUp();
     });
     document.addEventListener('contextmenu', (e) => e.preventDefault());
+
+    // 兜底：指针锁被解除（按 Esc 退出锁定时浏览器会直接解锁，部分浏览器不派发 Esc 按键）
+    // 且当前没有面板、未暂停时，视为暂停并打开设置
+    document.addEventListener('pointerlockchange', () => {
+      if (document.pointerLockElement) { this.everStarted = true; return; }
+      if (this.paused || this.ui.openPanel || !this.everStarted) return;
+      this.ui.openSettings();
+    });
   }
 
   // —— 装备 / 使用 ——
@@ -262,7 +304,20 @@ export class Game {
   }
 
   // 鱼竿/钩锁走蓄力抛出流程（左键按下蓄力、松开抛出）；建造锤由 _onLeftDown 单独处理。
+  // 手持食物时左键直接食用；鱼等不可直接食用的给出提示。
   _useTool() {
+    const sel = this.inventory.hotbar[this.ui.activeSlot];
+    const def = sel ? ITEMS[sel.id] : null;
+    if (def && def.category === 'food') {
+      if (!def.edible) {
+        this._flash(`${def.name}不能直接食用，需要先烹饪`, 2.0);
+        return;
+      }
+      this.inventory.consume(sel.id, 1);
+      this._flash(`吃掉了 ${def.name}`, 1.2);
+      this.ui.refreshCounts();
+      return;
+    }
     if (!this.equipped) { this.ui.setPrompt('未装备道具：按数字键选中快捷栏道具'); return; }
     if (this.toolCooldown > 0) return;
     // 渔网已改为木筏建筑，不再作为即时道具使用；此处保留以兼容其它瞬时道具。
@@ -472,6 +527,7 @@ export class Game {
   _flash(msg, time) {
     this.toolMsg = msg;
     this.toolMsgTimer = time;
+    this.ui.setPrompt(msg, true); // 立即显示并重新计时，到时自动消失
   }
 
   // 浮动原点：把所有实体整体平移，使玩家回到海面中心（原点），
@@ -1101,6 +1157,12 @@ export class Game {
     const dt = Math.min(this.clock.getDelta(), 0.05);
     const t = this.clock.elapsedTime;
 
+    // 暂停中：只渲染当前画面，冻结所有模拟（玩家/木筏/漂浮物/计时器）
+    if (this.paused) {
+      this.renderer.render(this.scene, this.camera);
+      return;
+    }
+
     // 接近海面边缘时，把所有实体以玩家为中心整体平移回原点（浮动原点）
     if (Math.hypot(this.player.pos.x, this.player.pos.z) > this.edgeRadius) this._recenter();
 
@@ -1122,6 +1184,12 @@ export class Game {
     this.playerModel.fp.visible = !this.thirdPerson;     // 第一人称：屏幕双手
     this.playerModel.update(dt, { moving });
     this.playerModel.fpUpdate();
+    // 右手手持物品模型：跟随当前选中的快捷栏物品；没有对应模型则清空
+    const heldId = this.inventory.hotbar[this.ui.activeSlot]?.id || null;
+    if (heldId !== this._heldId) {
+      this._heldId = heldId;
+      this.playerModel.setHeldItem(this._heldModelFor(heldId));
+    }
     // 第三人称：相机退到玩家身后俯视
     if (this.thirdPerson) {
       const y = p.yaw;
@@ -1180,6 +1248,12 @@ export class Game {
     this.ui.setPrompt(prompt);
 
     this.renderer.render(this.scene, this.camera);
+  }
+
+  // 手持物品对应的模型模板；没有对应模型返回 null（右手不显示）
+  _heldModelFor(id) {
+    const key = HELD_MODELS[id];
+    return key ? (this.resources.foodTemplates[key] || null) : null;
   }
 
   _label(type) {

@@ -82,10 +82,16 @@ export function buildPlayerModel() {
   nose.position.set(0, 0.15, -0.16); // 正面朝向 -Z（与玩家 forward 一致）
   neck.add(nose);
 
-  const aL = buildArm(1), aR = buildArm(-1);
+  // 角色正面朝 -Z，其右手在 +X 一侧（原先左右放反，导致持物手出现在左侧）
+  const aL = buildArm(-1), aR = buildArm(1);
   hips.add(aL.shoulder); hips.add(aR.shoulder);
   bones.armL = aL.shoulder; bones.elbowL = aL.elbow; bones.handL = aL.hand;
   bones.armR = aR.shoulder; bones.elbowR = aR.elbow; bones.handR = aR.hand;
+
+  // 第三人称右手持物挂点（跟随手臂/手部动作）
+  const gripBody = new THREE.Group();
+  gripBody.position.set(0, -0.1, 0);
+  bones.handR.add(gripBody);
 
   function buildLeg(side) {
     const hip = new THREE.Group();
@@ -108,13 +114,44 @@ export function buildPlayerModel() {
   bones.legR = lR.hip; bones.kneeR = lR.knee;
 
   // —— 第一人称手臂视角（仅双臂，挂在相机下）——
+  // 肩关节放在相机右侧外、画面外（x 0.46、y -0.30、z -0.26）：
+  // 该处早已在视锥之外，肩部断口不会被看见，也不会被近裁剪面切出缺口；
+  // 手臂再近水平地向内前方伸出，于是从画面右下/左下角斜着伸进画面中部，
+  // 看到的是完整的小臂+手，而不是悬在眼前的两个断桩。
   const fp = new THREE.Group();
-  fp.position.set(0, -0.45, -0.7); // 屏幕下方偏前
-  const fL = buildArm(1, 1.15), fR = buildArm(-1, 1.15);
-  fL.shoulder.position.set(0.28, 0.05, 0);
-  fR.shoulder.position.set(-0.28, 0.05, 0);
+  fp.position.set(0, -0.35, -0.26);
+  const fL = buildArm(1, 1.3), fR = buildArm(-1, 1.3);
+  fL.shoulder.position.set(-0.46, 0.05, 0); // 左手在屏幕左侧
+  fR.shoulder.position.set(0.46, 0.05, 0);  // 右手在屏幕右侧（持物手）
+
   fp.add(fL.shoulder); fp.add(fR.shoulder);
   const fpArmL = fL.shoulder, fpArmR = fR.shoulder, fpHand = fR.hand;
+
+  // 第一人称右手持物挂点
+  const gripFp = new THREE.Group();
+  gripFp.position.set(0, -0.1, 0);
+  fpHand.add(gripFp);
+
+  // —— 右手持物：第一/第三人称各放一份克隆，随手臂动作 ——
+  // 模板已归一化到最大边 0.7；第三人称按真人比例握持，
+  // 第一人称离相机近、视角广，需要放大一些才不会显得又小又远。
+  const HELD_SCALE_BODY = 0.45;
+  const HELD_SCALE_FP = 0.7;
+  function clearHeld() {
+    for (const g of [gripBody, gripFp]) {
+      while (g.children.length) g.remove(g.children[0]);
+    }
+  }
+  function setHeldItem(template) {
+    clearHeld();
+    if (!template) return; // 没有对应模型：右手不显示任何东西
+    for (const [grip, scale] of [[gripBody, HELD_SCALE_BODY], [gripFp, HELD_SCALE_FP]]) {
+      const holder = new THREE.Group();
+      holder.add(template.clone(true));
+      holder.scale.setScalar(scale);
+      grip.add(holder);
+    }
+  }
 
   // —— 共享动作状态 ——
   const anim = { time: 0, walkPhase: 0, walkBlend: 0, useTimer: 0, useDur: 0.6 };
@@ -157,13 +194,17 @@ export function buildPlayerModel() {
   }
 
   // 第一人称手臂动画（基础姿态 + 呼吸微摆 + 使用挥动）
-  const FP_R = { x: -1.15, z: 0.12 };
-  const FP_L = { x: -1.05, z: -0.12 };
+  // x：绕肩向前抬（+X 把 -Y 方向摆向 -Z），手臂这才朝屏幕前方伸出；
+  // z：绕肩左右张合，正/负决定手往哪一侧偏 —— 右手取负、左手取正即向中间收；
+  // y：绕手臂自身长轴翻转 180°，手（以及挂在手上的物品）朝向整个掉转，
+  //    手臂的指向不变，所以看的是“手心/物品正面”翻到了另一侧。
+  const FP_R = { x: 1.45, y: Math.PI, z: -0.40 };
+  const FP_L = { x: 1.45, y: Math.PI, z: 0.40 };
   function fpUpdate() {
     const sway = Math.sin(anim.time * 1.5) * 0.03;
     const k = anim.useTimer > 0 ? Math.sin((1 - anim.useTimer / anim.useDur) * Math.PI) : 0;
-    fpArmR.rotation.set(FP_R.x + sway - k * 0.7, 0, FP_R.z + k * 0.4);
-    fpArmL.rotation.set(FP_L.x + sway, 0, FP_L.z);
+    fpArmR.rotation.set(FP_R.x + sway + k * 0.2, FP_R.y, FP_R.z - k * 0.2);
+    fpArmL.rotation.set(FP_L.x + sway, FP_L.y, FP_L.z);
   }
 
   // 触发一次“使用/挥动”动作（右手），第三人称与第一人称共用
@@ -180,5 +221,5 @@ export function buildPlayerModel() {
     return src.getWorldPosition(target);
   }
 
-  return { group: root, bones, fp, update, fpUpdate, playUse, getHandWorld };
+  return { group: root, bones, fp, update, fpUpdate, playUse, getHandWorld, setHeldItem };
 }

@@ -132,6 +132,28 @@
     #rescue-panel button:hover { background: rgba(255,255,255,.22); }
     #rescue-panel .row { display: flex; gap: 8px; }
     #rescue-panel .row button { flex: 1; }
+    /* 设置面板（Esc 暂停）：音频通道开关 + 音量 */
+    #settings-panel {
+      position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+      width: 380px; background: rgba(8,14,28,.86); padding: 18px 20px; border-radius: 14px;
+      display: none; pointer-events: auto; z-index: 8; color: #fff;
+      border: 1px solid rgba(255,255,255,.18); box-shadow: 0 10px 40px rgba(0,0,0,.5);
+    }
+    #settings-panel h3 {
+      font-size: 16px; margin-bottom: 16px; text-align: center; letter-spacing: 3px; opacity: .95;
+    }
+    .setting-row { display: flex; align-items: center; gap: 12px; margin-bottom: 13px; font-size: 13px; }
+    .setting-row .s-name { display: flex; align-items: center; gap: 7px; width: 96px; flex: none; }
+    .setting-row .s-name input { accent-color: #ffd34d; width: 15px; height: 15px; cursor: pointer; }
+    .setting-row .s-vol { flex: 1; accent-color: #ffd34d; cursor: pointer; }
+    .setting-row .s-val { width: 44px; text-align: right; opacity: .75; font-variant-numeric: tabular-nums; }
+    .setting-row.off { opacity: .45; }
+    #settings-panel button {
+      width: 100%; margin-top: 10px; padding: 9px 0; cursor: pointer;
+      background: rgba(255,211,77,.16); color: #fff; border: 1px solid rgba(255,211,77,.55);
+      border-radius: 8px; font-size: 13px;
+    }
+    #settings-panel button:hover { background: rgba(255,211,77,.3); }
     #backpack h3 { font-size: 15px; margin-bottom: 10px; }
     #backpack-grid {
       display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px;
@@ -171,8 +193,8 @@
     <div id="equipped"></div>
     <div id="help">
       WASD 移动 · 鼠标 视角 · Shift 疾跑 · Space 跳跃<br/>
-      右键 拾取/操作 · 左键 建造/放置 · F 使用道具<br/>
-      1-9 选择快捷栏 · C 合成菜单 · B 背包<br/>
+      右键 拾取/操作 · 左键 建造/放置/食用<br/>
+      1-9 选择快捷栏 · C 合成菜单 · B 背包 · Esc 暂停/设置<br/>
       无帆/收帆：木筏随洋流漂移；扬帆：按船帆固定航向航行<br/>
       右键/E 瞄准船帆：开/收帆；调整航向时看向目标方向后左键确认<br/>
       右键/E 瞄准渔网：打开渔网储物面板，点击格子取出到背包
@@ -208,6 +230,30 @@
         <button id="net-take-all">全部取出</button>
         <button id="net-close">关闭（Esc）</button>
       </div>
+    </div>
+    <div id="settings-panel">
+      <h3>设置 · 已暂停</h3>
+      <div class="setting-row" data-ch="bgm">
+        <label class="s-name"><input type="checkbox" class="s-toggle"> 背景音乐</label>
+        <input type="range" class="s-vol" min="0" max="100" step="1">
+        <span class="s-val">50%</span>
+      </div>
+      <div class="setting-row" data-ch="ambient">
+        <label class="s-name"><input type="checkbox" class="s-toggle"> 环境音</label>
+        <input type="range" class="s-vol" min="0" max="100" step="1">
+        <span class="s-val">30%</span>
+      </div>
+      <div class="setting-row" data-ch="sfx">
+        <label class="s-name"><input type="checkbox" class="s-toggle"> 音效</label>
+        <input type="range" class="s-vol" min="0" max="100" step="1">
+        <span class="s-val">70%</span>
+      </div>
+      <div class="setting-row" data-ch="ui">
+        <label class="s-name"><input type="checkbox" class="s-toggle"> 界面音</label>
+        <input type="range" class="s-vol" min="0" max="100" step="1">
+        <span class="s-val">50%</span>
+      </div>
+      <button id="settings-resume">返回游戏（Esc）</button>
     </div>
     <div id="prompt"></div>
     <div id="crafting">
