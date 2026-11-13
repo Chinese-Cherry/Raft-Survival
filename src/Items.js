@@ -30,6 +30,8 @@ export const ITEMS = {
   // —— 道具 / 工具 ——
   hook_lock:  { id: 'hook_lock',  name: '钩锁',   icon: 'images/钩锁.png', category: 'tool' },
   fishing_rod:{ id: 'fishing_rod',name: '鱼竿',   icon: 'images/鱼竿.png', category: 'tool' },
+  // 木矛：暂无图片素材，先用 emoji 占位（放入 images/木矛.png 即可自动切换为图片）
+  wood_spear: { id: 'wood_spear', name: '木矛',   icon: '🗡️',             category: 'tool' },
   // 暂无对应图片，暂用 emoji 占位（放入 images/建造锤.png 即可自动切换为图片）
   build_hammer:{ id: 'build_hammer', name: '建造锤', icon: 'images/建造锤.png', category: 'tool' },
 };

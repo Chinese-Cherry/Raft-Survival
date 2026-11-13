@@ -7,7 +7,8 @@ import { Player } from './Player.js';
 import { Resources, TYPES } from './Resources.js';
 import { UI } from './UI.js';
 import { ITEMS } from './Items.js';
-import { PLAY, FLOAT, VITALS, FOOD, START_ITEMS, START_EQUIPPED } from './let.js';
+import { PLAY, FLOAT, VITALS, FOOD, SHARK, START_ITEMS, START_EQUIPPED } from './let.js';
+import { SharkSystem } from './Shark.js';
 import { buildPlayerModel } from '../models/player/player.js';
 import { AudioManager } from './Audio.js';
 
@@ -53,6 +54,9 @@ export class Game {
     this.crafting = new Crafting(this.inventory, (r) => this.onCraft(r));
     this.player = new Player(this.camera, this.canvas, this.raft);
     this.resources = new Resources(this.scene, this.ocean, this.raft, this.inventory, this.viewDist, foodModels);
+    // 鲨鱼：每 60~180 秒随机来袭，啃咬最外圈的木板；手持木矛靠近可击杀
+    this.sharks = new SharkSystem(this.scene, this.ocean, this.raft,
+      () => this._notify('⚠ 鲨鱼咬掉了一块木板！', 2.6));
     // 玩家可见模型：第三人称显示完整人形；第一人称显示挂在相机下的手臂视角
     this.playerModel = buildPlayerModel();
     this.scene.add(this.playerModel.group);
@@ -358,11 +362,37 @@ export class Game {
     if (this.buildMode === 'net') { this._tryBuildNet(); return; }
     if (this.buildMode === 'sail') { this._tryBuildSail(); return; }
     if (this.toolCooldown > 0) return;
+    // 木矛：不需要蓄力，左键立即刺出（不做建造/蓄力流程）
+    if (this.equipped === 'wood_spear') { this._spearAttack(); return; }
     if (this.equipped === 'fishing_rod' || this.equipped === 'hook_lock') {
       this.charging = { type: this.equipped, t: 0 };
     } else {
       this._useTool();
     }
+  }
+
+  // 🗡 木矛攻击：面前 SHARK.attackRange 米内的生物判定命中。
+  // 命中鲨鱼后按 SHARK.attackDamage 掉血，血尽则死亡沉入海底。
+  _spearAttack() {
+    this.toolCooldown = SHARK.attackCooldown;
+    this.playerModel?.playUse(0.35);
+    const fwd = this._forward();
+    const shark = this.sharks.hitTest(this.player.pos, fwd, SHARK.attackRange);
+    if (!shark) {
+      this._notify('木矛挥空了：靠近生物再攻击', 0.9);
+      return;
+    }
+    const killed = this.sharks.damage(shark, SHARK.attackDamage);
+    this._notify(
+      killed ? '🗡 木矛刺中要害：鲨鱼翻肚沉入海底' : `🗡 命中鲨鱼！（再刺 ${Math.max(0, shark.health)} 次击杀）`,
+      killed ? 2.4 : 1.2
+    );
+  }
+
+  // 短暂提示：复用主循环里的 toolMsg 通道（_flash 已被清空，不显示任何东西）
+  _notify(text, sec = 1.5) {
+    this.toolMsg = text;
+    this.toolMsgTimer = sec;
   }
 
   // 左键松开：按蓄力时长抛出鱼竿/钩锁
@@ -692,6 +722,9 @@ export class Game {
         pkg.group.position.z -= dz;
       }
     }
+
+    // 鲨鱼（世界坐标，不挂在木筏下）
+    this.sharks.recenter(dx, dz);
 
     // 钓鱼浮漂与目标同步
     if (this.bobber.visible) { this.bobber.position.x -= dx; this.bobber.position.z -= dz; }
@@ -1368,6 +1401,7 @@ export class Game {
     this._updateFishing(dt);
     this._updateHook(dt, t);
     this._updateNets(dt);
+    this.sharks.update(dt, t, this.player.pos); // 鲨鱼：刷新计时、游动、啃咬木板
 
     // 建造预览：幽灵格/船帆幽灵随建造模式刷新（均绑定于木筏，随筏漂移）
     this._updateBuildPreview();
@@ -1387,6 +1421,10 @@ export class Game {
     } else if (this.toolMsgTimer > 0) {
       this.toolMsgTimer -= dt;
       prompt = this.toolMsg;
+    } else if (this.sharks.biting) {
+      // 鲨鱼正在啃咬木板：警报优先于普通拾取/建造提示（平时游荡不打扰其它提示）
+      const hasSpear = this.equipped === 'wood_spear';
+      prompt = hasSpear ? '⚠ 鲨鱼正在啃咬木板！左键攻击它' : '⚠ 鲨鱼正在啃咬木板！切到木矛后左键攻击';
     } else {
       const near = this.resources.nearest(this.player.pos);
       const aimSail = !this.buildMode && this._aimAtSail();
@@ -1417,8 +1455,32 @@ export class Game {
 
   // 手持物品对应的模型模板；没有对应模型返回 null（右手不显示）
   _heldModelFor(id) {
+    if (id === 'wood_spear') return this._spearTemplate();
     const key = HELD_MODELS[id];
     return key ? (this.resources.foodTemplates[key] || null) : null;
+  }
+
+  // 木矛手持模型（程序化生成，一次性创建后复用；模板会被 setHeldItem 克隆到两只手）
+  // 手持约定：局部 -Y 为“朝前”，因此矛尖朝 -Y。
+  _spearTemplate() {
+    if (this._spearTpl) return this._spearTpl;
+    const g = new THREE.Group();
+    const wood = new THREE.MeshStandardMaterial({ color: 0x9a6b33, roughness: 0.9 });
+    const ropeMat = new THREE.MeshStandardMaterial({ color: 0xd9c08a, roughness: 0.95 });
+
+    const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.042, 0.042, 1.12, 8), wood);
+    shaft.position.y = -0.1; // 手握住中部，矛尖在 -Y 端
+    const tip = new THREE.Mesh(new THREE.ConeGeometry(0.105, 0.32, 8), wood);
+    tip.position.y = -0.82;
+    tip.rotation.x = Math.PI; // 锥尖朝 -Y
+    const lash = new THREE.Mesh(new THREE.TorusGeometry(0.075, 0.022, 6, 14), ropeMat);
+    lash.position.y = -0.6;
+    lash.rotation.x = Math.PI / 2;
+
+    g.add(shaft, tip, lash);
+    g.traverse((o) => { if (o.isMesh) o.castShadow = true; });
+    this._spearTpl = g;
+    return g;
   }
 
   _label(type) {

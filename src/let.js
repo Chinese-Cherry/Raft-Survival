@@ -23,7 +23,7 @@ export const ITEM_IDS = {
   // 鱼类
   小鱼: 'fish_small', 鲈鱼: 'bass', 河豚: 'pufferfish', 鲑鱼: 'salmon', 金枪鱼: 'tuna',
   // 道具 / 工具
-  钩锁: 'hook_lock', 鱼竿: 'fishing_rod', 建造锤: 'build_hammer',
+  钩锁: 'hook_lock', 鱼竿: 'fishing_rod', 建造锤: 'build_hammer', 木矛: 'wood_spear',
 };
 
 // 玩家开局默认拥有的物品：物品名称 → 数量（可自由增删条目或改数量，id 及对应名称见上方 ITEM_IDS）
@@ -87,6 +87,25 @@ export const VITALS = {
   thirstDrain: 0.75,    // 水分消耗速度（点/秒）
 };
 
+// —— 鲨鱼（木筏威胁）——
+// 鲨鱼一直在木筏周围游荡，每隔 biteDelayMin ~ biteDelayMax 秒游向最外圈的木板啃咬；
+// 咬烂一块木板后回到周围继续游荡。手持木矛靠近后左键攻击，命中 health 次即击杀，
+// 被击杀 respawnDelay 秒后会再游来一条（始终保持有鲨鱼在附近）。
+export const SHARK = {
+  roamRadius: 4.5,      // 游荡时离木筏外沿的距离
+  roamSpeed: 4.2,       // 游荡时的速度（要跟得上航行中的木筏，否则会被甩开/挤到）
+  approachSpeed: 6.0,   // 游向木筏的速度（需快于木筏最快航速，才追得上）
+  biteDelayMin: 30,     // 两次啃咬之间在周围游荡的时间（秒）
+  biteDelayMax: 60,
+  biteInterval: 3,      // 每次啃咬的间隔（秒）
+  bitesPerTile: 20,     // 咬掉一块木板需要的啃咬次数
+  health: 7,            // 木矛命中几次后死亡
+  attackDamage: 1,      // 每次木矛命中的伤害
+  attackRange: 3.6,     // 木矛可攻击的距离
+  attackCooldown: 2,    // 木矛两次攻击的间隔（秒）
+  respawnDelay: 25,     // 被击杀后多久再游来一条（秒）
+};
+
 // —— 调试 ——
 export const DEBUG = {
   enabled: false,     // 调试模式：漂浮物就近生成且不移动、木筏不漂移；面板随此开关显隐
@@ -110,4 +129,4 @@ export const FOOD = {
 // CONFIG 里放的是上面同一批对象（引用相同）：`CONFIG.RAFT.driftSpeed` 与
 // `RAFT.driftSpeed` 指向同一个值，改任一处都实时生效。
 // 想一次拿到全部参数（如调试面板、存档）用 CONFIG；只关心某一块时按需取单个分组更简洁。
-export const CONFIG = { RAFT, FLOAT, PLAY, VITALS, FOOD, DEBUG };
+export const CONFIG = { RAFT, FLOAT, PLAY, VITALS, FOOD, SHARK, DEBUG };

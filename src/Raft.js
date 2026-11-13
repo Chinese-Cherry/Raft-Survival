@@ -263,6 +263,46 @@ export class Raft {
   // 所有甲板格（木筏格子 + 渔网）的网格键
   deckKeys() { return [...this.tiles.keys(), ...this.netCells.keys()]; }
 
+  // —— 木筏格子拆除（鲨鱼啃咬） ——
+  // 最外圈木板：四邻里至少缺一块的格子（有缺口才咬得到）。
+  // 返回 [{ gx, gz, dx, dz }]，dx/dz 为缺口方向（该处朝外的单位向量）。
+  outerTiles() {
+    const out = [];
+    const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+    for (const key of this.tiles.keys()) {
+      const [gx, gz] = key.split(',').map(Number);
+      for (const [dx, dz] of dirs) {
+        if (this.hasTile(gx + dx, gz + dz)) continue;
+        out.push({ gx, gz, dx, dz });
+      }
+    }
+    return out;
+  }
+
+  // 移除一块木板（被鲨鱼咬烂）。最后一块木板不会被移除，避免整条木筏消失。
+  // 连带拆掉依附在这块木板上的木墙（含邻格朝这块木板的一面），避免墙悬空。
+  removeTile(gx, gz) {
+    if (this.tiles.size <= 1) return false;
+    const key = this.key(gx, gz);
+    const m = this.tiles.get(key);
+    if (!m) return false;
+    this.group.remove(m);
+    if (m.geometry) m.geometry.dispose();
+    if (m.material) m.material.dispose();
+    this.tiles.delete(key);
+
+    for (const [wKey, w] of [...this.walls]) {
+      const onSelf = w.gx === gx && w.gz === gz;
+      const facing = w.gx + w.dx === gx && w.gz + w.dz === gz;
+      if (!onSelf && !facing) continue;
+      this.group.remove(w.mesh);
+      if (w.mesh.geometry) w.mesh.geometry.dispose();
+      if (w.mesh.material) w.mesh.material.dispose();
+      this.walls.delete(wKey);
+    }
+    return true;
+  }
+
   // 到木筏边缘（按格子范围而不是格心）的水平最短距离；已站在筏面上时为 0
   distanceTo(x, z) {
     let best = Infinity;
