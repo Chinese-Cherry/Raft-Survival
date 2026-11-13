@@ -12,9 +12,11 @@ import { buildPlayerModel } from '../models/player/player.js';
 import { AudioManager } from './Audio.js';
 
 // 手持物品 id → 模型模板名（未列出的物品没有模型，右手不显示任何东西）
+// 键为物品 id，值为 Models.js 里加载的模板名（食物/材料来自 .fbx，钩锁来自 models/equip 的 .glb）
 const HELD_MODELS = {
   apple: 'apple', banana: 'banana', orange: 'orange',
   plastic: 'plastic_sheet', lumber: 'wood_plank', leaf: 'leaf', rope: 'rope',
+  hook_lock: 'grappling_hook',
 };
 
 // 游戏主控：装配场景/渲染器/光照，组织各子系统并驱动主循环与交互。
@@ -237,6 +239,8 @@ export class Game {
 
     // 木筏建筑：已放置的渔网列表（每个渔网自带储物格）
     this.placedNets = [];
+    // 掉落的包裹（背包满时钩回的物品、玩家主动丢弃的物品），右键可捡回
+    this.packages = [];
   }
 
   _bindInteractions() {
@@ -298,10 +302,7 @@ export class Game {
     // 建造依赖于幽灵格：切换掉建造锤即退出建造模式
     if (id !== 'build_hammer') this.cancelBuild();
     if (id === null) { this.equipped = null; this.ui.setEquipped(null); return; }
-    if (!this.inventory.has(id)) {
-      this.ui.setPrompt(`尚未拥有 ${ITEMS[id]?.name || id}`);
-      return;
-    }
+    if (!this.inventory.has(id)) return; // 没有该物品：静默忽略（不弹提示）
     this.equipped = id;
     this.ui.setEquipped(id);
   }
@@ -322,7 +323,7 @@ export class Game {
       this.ui.refreshCounts();
       return;
     }
-    if (!this.equipped) { this.ui.setPrompt('未装备道具：按数字键选中快捷栏道具'); return; }
+    if (!this.equipped) return; // 未装备道具：静默忽略
     if (this.toolCooldown > 0) return;
     // 渔网已改为木筏建筑，不再作为即时道具使用；此处保留以兼容其它瞬时道具。
     switch (this.equipped) {
@@ -422,7 +423,7 @@ export class Game {
       const loot = lootPool[Math.floor(Math.random() * lootPool.length)];
       this.inventory.add(loot, 1);
       this.ui.refreshCounts();
-      this._flash(`🎣 钓到了 ${ITEMS[loot].name}！`, 2.0);
+      this.ui.showItem(loot, 1);
       this.bobber.visible = false;
       this.fishingLine.visible = false;
       this.fishing = null;
@@ -488,7 +489,6 @@ export class Game {
         if (h.items.includes(it) || it.pulling) continue;
         if (it.mesh.position.distanceTo(h.pos) < 1.3) {
           this._hookItem(it);
-          this._flash(`🪝 钩住了 ${ITEMS[it.type].name}`, 1.0);
           h.phase = 'pulling';
           break;
         }
@@ -512,7 +512,7 @@ export class Game {
             if (it.mesh.position.distanceTo(hi.mesh.position) < 1.6) { near = true; break; }
           }
         }
-        if (near) { this._hookItem(it); this._flash(`🪝 又钩住了 ${ITEMS[it.type].name}`, 1.0); }
+        if (near) this._hookItem(it);
       }
       this._syncHooked();
       h.pulled += dt;
@@ -533,25 +533,136 @@ export class Game {
 
   _finishHook() {
     const h = this.hook;
-    const n = h.items.length;
+    // 钩锁收回时统一结算：按物品类型汇总数量，回到手上后再统一弹出「名称 ×数量」提示。
+    // 背包放不下的部分不会凭空消失：汇总后掉成一个包裹落在脚下，右键可捡回。
+    const gained = new Map();   // 物品 id → 实际进包的数量
+    const overflow = new Map(); // 物品 id → 放不下的数量
     for (const it of h.items) {
-      if (this.resources.items.includes(it)) this.resources.collect(it); // 直接放入背包
+      if (!this.resources.items.includes(it)) continue;
+      if (this.inventory.add(it.type, 1) > 0) {
+        overflow.set(it.type, (overflow.get(it.type) || 0) + 1);
+      } else {
+        gained.set(it.type, (gained.get(it.type) || 0) + 1);
+      }
+      this.resources.absorb(it); // 从水面移除（已入包，或已计入包裹）
     }
+    for (const [id, n] of gained) this.ui.showItem(id, n);
+    if (overflow.size) this._dropPackage([...overflow].map(([id, n]) => ({ id, n })));
     h.items = [];
     h.active = false;
     h.phase = 'idle';
     this._hookMesh.visible = false;
     this.hookLine.visible = false;
     this.ui.refreshCounts();
-    this._flash(n > 0 ? `🪝 收回钩锁，获得 ${n} 件物品` : '🪝 钩锁空手而归', 1.5);
     this.toolCooldown = 0.8;
   }
 
-  _flash(msg, time) {
-    this.toolMsg = msg;
-    this.toolMsgTimer = time;
-    this.ui.setPrompt(msg, true); // 立即显示并重新计时，到时自动消失
+  // —— 包裹：背包满时钩回的物品、玩家主动丢弃的物品，都会落地成一个可拾取的包裹 ——
+
+  // 包裹模型：木箱 + 两道捆绳（几何体与材质共用，避免每次掉落都新建）
+  _packageMesh() {
+    if (!this._pkgAssets) {
+      this._pkgAssets = {
+        box: new THREE.BoxGeometry(0.55, 0.4, 0.55),
+        strapX: new THREE.BoxGeometry(0.58, 0.05, 0.12),
+        strapZ: new THREE.BoxGeometry(0.12, 0.05, 0.58),
+        wood: new THREE.MeshStandardMaterial({ color: 0x8a5a2b, roughness: 0.9 }),
+        strap: new THREE.MeshStandardMaterial({ color: 0xd9c08a, roughness: 0.85 }),
+      };
+    }
+    const a = this._pkgAssets;
+    const g = new THREE.Group();
+    const box = new THREE.Mesh(a.box, a.wood);
+    box.position.y = 0.22;
+    box.castShadow = true;
+    const s1 = new THREE.Mesh(a.strapX, a.strap);
+    s1.position.y = 0.43;
+    const s2 = new THREE.Mesh(a.strapZ, a.strap);
+    s2.position.y = 0.43;
+    g.add(box, s1, s2);
+    return g;
   }
+
+  // 掉落一个包裹，items = [{ id, n }]。
+  // 落在玩家前方：在筏面上就挂到 raft.group 下（随筏漂移），否则落在海面上。
+  _dropPackage(items) {
+    const list = (items || []).filter((it) => it && it.n > 0);
+    if (!list.length) return null;
+
+    const f = this._forward();
+    const wx = this.player.pos.x + f.x * 0.9;
+    const wz = this.player.pos.z + f.z * 0.9;
+    const group = this._packageMesh();
+
+    if (this.raft.isOnRaft(wx, wz)) {
+      this.raft.group.updateMatrixWorld(true);
+      const local = this.raft.group.worldToLocal(new THREE.Vector3(wx, 0, wz));
+      group.position.set(local.x, 0.02, local.z);
+      this.raft.group.add(group);
+    } else {
+      group.position.set(wx, this.ocean.surfaceY(wx, wz, this.clock.elapsedTime) + 0.05, wz);
+      this.scene.add(group);
+    }
+
+    const pkg = { group, items: list };
+    this.packages.push(pkg);
+    return pkg;
+  }
+
+  // 准星瞄准的包裹（近距离，5 米内）
+  _aimAtPackage() {
+    if (!this.packages.length) return null;
+    this.camera.updateMatrixWorld();
+    const ray = new THREE.Raycaster();
+    ray.setFromCamera(new THREE.Vector2(0, 0), this.camera);
+    const hit = ray.intersectObjects(this.packages.map((p) => p.group), true)[0];
+    if (!hit || hit.distance > 5) return null;
+    let o = hit.object;
+    while (o) {
+      const p = this.packages.find((q) => q.group === o);
+      if (p) return p;
+      o = o.parent;
+    }
+    return null;
+  }
+
+  // 右键拾取包裹：整包都放得进背包才拾取（放不下就保持原样，不弹提示）
+  _pickupPackage(pkg) {
+    if (!this.inventory.canFitAll(pkg.items)) return;
+    for (const { id, n } of pkg.items) {
+      this.inventory.add(id, n);
+      this.ui.showItem(id, n);
+    }
+    this._removePackage(pkg);
+    this.ui.refreshCounts();
+    this.ui.setPackageInfo(null);
+  }
+
+  _removePackage(pkg) {
+    const i = this.packages.indexOf(pkg);
+    if (i >= 0) this.packages.splice(i, 1);
+    if (pkg.group.parent) pkg.group.parent.remove(pkg.group);
+  }
+
+  // 丢弃：把背包/快捷栏里选中的那一格整堆丢出去，落成一个包裹（可再捡回）
+  discardPicked(picked) {
+    if (!picked) return;
+    const slots = picked.area === 'hotbar' ? this.inventory.hotbar
+      : picked.area === 'pack' ? this.inventory.pack : null;
+    if (!slots) return;
+    const s = slots[picked.idx];
+    if (!s) return;
+    slots[picked.idx] = null;
+    // 丢掉的正好是主手那格：同步卸下工具
+    if (picked.area === 'hotbar' && picked.idx === this.ui.activeSlot) this.ui.syncMainHand();
+    this._dropPackage([{ id: s.id, n: s.n }]);
+    this.ui.picked = null;
+    this.ui.refreshCounts();
+  }
+
+  // 临时浮动提示已按需求移除：画面上只保留「获得物品」提示（右下角）与常驻操作提示。
+  // 这里保留空实现，调用点不动，日后想恢复某条反馈时把实现补回来即可。
+  _flash() {}
 
   // 浮动原点：把所有实体整体平移，使玩家回到海面中心（原点），
   // 避免木筏无限漂移出界。玩家屏幕位置基本不变（场景被拉回）。
@@ -573,6 +684,14 @@ export class Game {
     this.resources.center.set(0, 0, 0);
     this.resources.prevCenter.set(0, 0, 0);
     this.resources.playerVel.set(0, 0, 0);
+
+    // 掉在海面上的包裹同步平移（挂在木筏下的会随筏移动，无需处理）
+    for (const pkg of this.packages) {
+      if (pkg.group.parent === this.scene) {
+        pkg.group.position.x -= dx;
+        pkg.group.position.z -= dz;
+      }
+    }
 
     // 钓鱼浮漂与目标同步
     if (this.bobber.visible) { this.bobber.position.x -= dx; this.bobber.position.z -= dz; }
@@ -666,8 +785,10 @@ export class Game {
     return `${names[Math.round(deg / 45) % 8]}（${Math.round(deg)}°）`;
   }
 
-  // 右键：瞄准船帆/渔网时打开对应面板；否则拾取「瞄准（视角前方）且近距离」的漂浮物
+  // 右键：瞄准包裹时捡起；瞄准船帆/渔网时打开对应面板；否则拾取「瞄准且近距离」的漂浮物
   _tryPickup() {
+    const pkg = this._aimAtPackage();
+    if (pkg) { this._pickupPackage(pkg); return; }
     if (this._aimAtSail()) { this.ui.toggleSailPanel(); return; }
     const net = this._aimAtNet();
     if (net) { this.ui.toggleNetPanel(net); return; }
@@ -682,7 +803,12 @@ export class Game {
       if (d < bestD) { bestD = d; best = it; }
     }
     if (!best) { this._flash('未瞄准可拾取的漂浮物', 1.0); return; }
-    this.resources.collect(best);
+    // 右键拾取：从水面拿走并放进背包，同时弹出「名称 ×数量」提示；
+    // 背包满时同样掉落成包裹（与钩锁一致），避免物品凭空消失。
+    const left = this.inventory.add(best.type, 1);
+    this.resources.absorb(best);
+    if (left > 0) this._dropPackage([{ id: best.type, n: 1 }]);
+    else this.ui.showItem(best.type, 1);
     this.ui.refreshCounts();
   }
 
@@ -898,8 +1024,7 @@ export class Game {
   onCraft(recipe) {
     if (recipe.structural) {
       // 木筏建筑（木筏格子/木墙/渔网/船帆）统一走建造模式（place=true），不会直接到这里；
-      // 兜底：若被直接调用，只做材料提示，避免绕过网格判定乱放。
-      this.ui.setPrompt('请手持建造锤，在建造菜单中选择该建筑');
+      // 兜底：若被直接调用则忽略，避免绕过网格判定乱放。
     } else if (recipe.output) {
       // 产出类：把结果物品加入背包（含工具类道具）
       this.inventory.add(recipe.output.id, recipe.output.n);
@@ -1129,27 +1254,28 @@ export class Game {
   takeNetItem(net, idx) {
     const s = net.storage[idx];
     if (!s) return;
-    const named = ITEMS[s.id]?.name || s.id;
-    const left = this.inventory.add(s.id, s.n);
+    const id = s.id;
+    const left = this.inventory.add(id, s.n);
     const taken = s.n - left;
-    if (taken <= 0) { this._flash(`背包已满，无法取出${named}`, 1.2); return; }
+    if (taken <= 0) return; // 背包已满：静默（不弹提示）
     if (left > 0) s.n = left; else net.storage[idx] = null;
-    this._flash(`取出 ${named} x${taken}`, 1.2);
+    this.ui.showItem(id, taken);
     this.ui.refreshCounts();
     if (this.ui.openPanel === 'net') this.ui.renderNet();
   }
 
-  // 一键取出渔网内全部物品
+  // 一键取出渔网内全部物品（按物品分别记数，每样一个提示框）
   takeAllNetItems(net) {
-    let moved = 0;
+    const gained = new Map(); // 物品 id → 取出数量
     for (let i = 0; i < net.storage.length; i++) {
       const s = net.storage[i];
       if (!s) continue;
       const left = this.inventory.add(s.id, s.n);
-      moved += s.n - left;
+      const taken = s.n - left;
+      if (taken > 0) gained.set(s.id, (gained.get(s.id) || 0) + taken);
       if (left > 0) s.n = left; else net.storage[i] = null;
     }
-    this._flash(moved > 0 ? `取出 ${moved} 件物品` : '背包已满或渔网为空', 1.2);
+    for (const [id, n] of gained) this.ui.showItem(id, n);
     this.ui.refreshCounts();
     if (this.ui.openPanel === 'net') this.ui.renderNet();
   }
@@ -1246,10 +1372,16 @@ export class Game {
     // 建造预览：幽灵格/船帆幽灵随建造模式刷新（均绑定于木筏，随筏漂移）
     this._updateBuildPreview();
 
-    // 提示优先级：钓鱼中 > 道具反馈 > 拾取/建造
+    // 瞄准包裹：屏幕正上方列出内部物品（最多 3 项）。面板打开时不判定。
+    const aimPkg = this.ui.openPanel ? null : this._aimAtPackage();
+    this.ui.setPackageInfo(aimPkg ? aimPkg.items : null);
+
+    // 提示优先级：钓鱼中 > 瞄准包裹 > 定航向 > 拾取/建造
     let prompt = '';
     if (this.fishing) {
       prompt = '🎣 等待鱼儿上钩…';
+    } else if (aimPkg) {
+      prompt = '右键 拾取包裹';
     } else if (this.aimingSail) {
       prompt = `转动视角确定船帆航向：${this._headingText(this.player.yaw)}　左键/E 确认，右键/Esc 取消`;
     } else if (this.toolMsgTimer > 0) {

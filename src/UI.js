@@ -13,6 +13,9 @@ export class UI {
     this.activeSlot = 0; // 当前选中的快捷栏格
 
     this.elPrompt = document.getElementById("prompt");
+    this.elItemToasts = document.getElementById("item-toasts"); // 右下角「获得物品」提示（每种物品一个框）
+    this._itemBoxes = new Map(); // 物品 id → { el, n, timer }：用于同种物品累加数量
+    this.elPackageInfo = document.getElementById("package-info"); // 屏幕正上方：瞄准包裹的内容预览
     this.elCraft = document.getElementById("crafting");
     this.elRecipes = document.getElementById("recipe-list");
     this.elBackpack = document.getElementById("backpack");
@@ -68,6 +71,12 @@ export class UI {
     // 传送确认面板：传送回木筏 / 继续探索
     document.getElementById("rescue-confirm").addEventListener("click", () => this.game.teleportToRaft());
     document.getElementById("rescue-cancel").addEventListener("click", () => this._closePanels());
+
+    // 背包面板：丢弃当前选中的那一格（掉落成包裹，可再捡回）
+    document.getElementById("backpack-discard").addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      this.game.discardPicked(this.picked);
+    });
 
     // 设置面板（Esc 暂停时打开）：每个音频通道一行，含开关与音量滑条
     this.elSettings = document.getElementById("settings-panel");
@@ -288,19 +297,83 @@ export class UI {
     }
   }
 
-  setEquipped(id) {
+  // 右下角「获得物品」提示：每种物品一个独立提示框，显示「名称 ×数量」。
+  // 同种物品再次获得不新建框，只累加数量并刷新停留时间；不同物品各占一个框，
+  // 新框贴底、未消失的旧框平滑上移，每个框 2 秒无新增后淡出移除。
+  showItem(id, n = 1) {
+    const box = this.elItemToasts;
+    if (!box || !id) return;
+
+    let rec = this._itemBoxes.get(id);
+    if (!rec) {
+      // 记录已有提示的位置，插入新框后做 FLIP 补偿，让旧框平滑上移
+      const prev = [...box.children];
+      const beforeTop = prev.map((el) => el.getBoundingClientRect().top);
+
+      const el = document.createElement("div");
+      el.className = "item-toast";
+      box.appendChild(el);
+      // 下一帧再加 in 类，让透明度/位移过渡生效（从下方淡入）
+      requestAnimationFrame(() => el.classList.add("in"));
+
+      prev.forEach((old, i) => {
+        const dy = beforeTop[i] - old.getBoundingClientRect().top;
+        if (dy > 0 && old.animate) {
+          old.animate(
+            [{ transform: `translateY(${dy}px)` }, { transform: "translateY(0)" }],
+            { duration: 220, easing: "ease-out" }
+          );
+        }
+      });
+
+      // 数量上限：超出时丢掉最旧的框（同时清掉它在表里的记录）
+      while (box.children.length > 8) {
+        const oldest = box.firstElementChild;
+        for (const [key, v] of this._itemBoxes) {
+          if (v.el === oldest) this._itemBoxes.delete(key);
+        }
+        box.removeChild(oldest);
+      }
+
+      rec = { el, n: 0, timer: null };
+      this._itemBoxes.set(id, rec);
+    }
+
+    rec.n += n;
+    rec.el.textContent = `${ITEMS[id]?.name || id} ×${rec.n}`;
+
+    // 每次获得都重新计时：2 秒内没有再次获得就淡出移除
+    clearTimeout(rec.timer);
+    rec.timer = setTimeout(() => {
+      rec.el.classList.remove("in");
+      rec.el.classList.add("out");
+      setTimeout(() => {
+        rec.el.remove();
+        if (this._itemBoxes.get(id) === rec) this._itemBoxes.delete(id);
+      }, 320);
+    }, 2000);
+  }
+
+  // 屏幕正上方：瞄准包裹时显示内部物品，最多列 3 项，超出用省略号；传 null 隐藏。
+  setPackageInfo(items) {
+    const el = this.elPackageInfo;
+    if (!el) return;
+    if (!items || items.length === 0) {
+      el.style.display = "none";
+      return;
+    }
+    const list = items.slice(0, 3)
+      .map(({ id, n }) => `${ITEMS[id]?.name || id}${n > 1 ? ` ×${n}` : ""}`)
+      .join("、");
+    el.innerHTML = `<b>包裹</b>${list}${items.length > 3 ? " …" : ""}`;
+    el.style.display = "block";
+  }
+
+  // 装备反馈的临时提示已按需求移除：这里只保证旧提示不残留。
+  // 若以后想恢复「已装备 xxx」的一秒提示，把显示逻辑补回来即可。
+  setEquipped() {
     clearTimeout(this._equippedTimer);
-    if (!id) { this.elEquipped.style.display = "none"; return; }
-    const def = ITEMS[id];
-    const hint = (id === 'hook_lock' || id === 'fishing_rod') ? '左键蓄力抛出'
-      : (id === 'build_hammer') ? '合成菜单选择建筑后放置'
-        : '左键 使用';
-    this.elEquipped.style.display = "block";
-    // 装备提示只显示文字，避免图片以原始尺寸撑大遮挡游玩画面
-    this.elEquipped.innerHTML =
-      `<span class="key">[已装备]</span>${def.name}　<span style="opacity:.6">${hint}</span>`;
-    // 提示显示一段时间后自动消失
-    this._equippedTimer = setTimeout(() => { this.elEquipped.style.display = "none"; }, 1000);
+    this.elEquipped.style.display = "none";
   }
 
   // 蓄力条：p 为 0~1 的进度；传 null 隐藏。
@@ -522,11 +595,7 @@ export class UI {
           if (this.game.selectBuild(r.id)) this._closePanels();
           return;
         }
-        if (!this.crafting.canCraft(r)) {
-          // 木筏类建筑（含渔网）材料不足时统一提示"无法建造"
-          this.setPrompt(r.structural ? '无法建造（材料不足）' : '材料不足，无法合成');
-          return;
-        }
+        if (!this.crafting.canCraft(r)) return; // 材料不足：静默忽略（不弹提示）
         this.crafting.craft(r.id);
         this.refreshCounts();
       });

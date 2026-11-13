@@ -1,11 +1,24 @@
 import * as THREE from 'three';
 import { FBXLoader } from 'https://unpkg.com/three@0.160.0/examples/jsm/loaders/FBXLoader.js';
+import { GLTFLoader } from 'https://unpkg.com/three@0.160.0/examples/jsm/loaders/GLTFLoader.js';
 
 // 食物模型：与 models/food 下的 .fbx 一一对应
 export const FOOD_MODELS = ['apple', 'banana', 'orange'];
 
 // 材料模型：与 models/material 下的 .fbx 一一对应
 export const MATERIAL_MODELS = ['plastic_sheet', 'wood_plank', 'leaf', 'rope'];
+
+// 装备/手持道具模型：key 用作模板名，value 为 models/equip 下的文件名（.glb）
+export const EQUIP_MODELS = {
+  grappling_hook: 'raft_grappling_hook.glb',
+};
+
+// 装备模型朝向修正（绕自身中心旋转，单位弧度）。
+// 第一/第三人称里“朝前”是手的局部 -Y，而钩锁模型的钩爪在 +Y 端、握柄在 -Y 端，
+// 所以绕 X 轴翻 180°：钩爪朝前，握柄朝手。新增装备时按需在这里补一条。
+const EQUIP_ROTATION = {
+  grappling_hook: { x: Math.PI, y: 0, z: 0 },
+};
 
 // 归一化：缩放到统一尺寸，并把几何中心移到原点，方便随浪倾斜/旋转
 function normalize(obj) {
@@ -68,4 +81,31 @@ export async function loadFoodModels() {
 // 预加载材料模型（木头/塑料/绳索/木材等漂浮物的模型）
 export async function loadMaterialModels() {
   return loadModels(MATERIAL_MODELS, 'material');
+}
+
+// 预加载装备/手持道具模型（.glb）。同样做归一化，保持与食物/材料一致的尺寸基准，
+// 这样 player.js 里按“最大边 0.7”换算的握持缩放对所有物品都通用。
+export async function loadEquipModels() {
+  const loader = new GLTFLoader();
+  const out = {};
+  await Promise.all(Object.entries(EQUIP_MODELS).map(([key, file]) => new Promise((resolve) => {
+    loader.load(
+      `./models/equip/${file}`,
+      (gltf) => {
+        const obj = gltf.scene;
+        normalize(obj);
+        const r = EQUIP_ROTATION[key];
+        if (r) obj.rotation.set(r.x || 0, r.y || 0, r.z || 0);
+        out[key] = hasMeshes(obj) ? obj : fallbackMesh();
+        resolve();
+      },
+      undefined,
+      () => {
+        console.warn('模型加载失败，使用占位盒:', file);
+        out[key] = fallbackMesh();
+        resolve();
+      }
+    );
+  })));
+  return out;
 }

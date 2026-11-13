@@ -83,8 +83,8 @@ export const PLAY = {
 // 想调快调慢只改这里的两个数字即可（例如 hungerDrain: 1 → 100 秒耗完）。
 export const VITALS = {
   max: 100,             // 初始 / 上限值
-  hungerDrain: 0.1,    // 饱食度消耗速度（点/秒）
-  thirstDrain: 0.15,    // 水分消耗速度（点/秒）
+  hungerDrain: 0.5,    // 饱食度消耗速度（点/秒）
+  thirstDrain: 0.75,    // 水分消耗速度（点/秒）
 };
 
 // —— 调试 ——

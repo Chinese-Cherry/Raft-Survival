@@ -82,6 +82,18 @@ export class Inventory {
     return true;
   }
 
+  // 能否把一整批物品（items: [{ id, n }]）完整塞进背包。
+  // 用一份副本试放，不改动真实背包；有一个放不下就返回 false。
+  canFitAll(items) {
+    const tmp = Object.create(Inventory.prototype);
+    tmp.hotbar = this.hotbar.map((s) => (s ? { id: s.id, n: s.n } : null));
+    tmp.pack = this.pack.map((s) => (s ? { id: s.id, n: s.n } : null));
+    for (const { id, n } of items) {
+      if (tmp.add(id, n) > 0) return false;
+    }
+    return true;
+  }
+
   count(id) {
     let t = 0;
     for (const s of this.slots) if (s && s.id === id) t += s.n;
