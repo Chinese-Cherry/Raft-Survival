@@ -1,12 +1,11 @@
 import * as THREE from 'three';
-import { CFG } from './let.js';
+import { FLOAT, PLAY, DEBUG } from './let.js';
 
+// 会随洋流漂浮的资源类型（只放材料；苹果/香蕉/橙子等可食用物品不再漂浮，
+// 它们的定义仍在 let.js 的 FOOD 中，需要时通过钓鱼等其它途径获得）。
 export const TYPES = {
   plastic: { color: 0x4fa3d1, label: '塑料', shape: 'model', radius: 0.55, model: 'plastic_sheet' },
   lumber: { color: 0x6f4a22, label: '木材', shape: 'model', radius: 0.55, model: 'wood_plank' },
-  apple: { color: 0xd14f6a, label: '苹果', shape: 'model', radius: 0.45, model: 'apple' },
-  banana: { color: 0xe6c84f, label: '香蕉', shape: 'model', radius: 0.45, model: 'banana' },
-  orange: { color: 0xe08a2b, label: '橙子', shape: 'model', radius: 0.45, model: 'orange' },
   leaf:   { color: 0x2e7d32, label: '树叶', shape: 'model', radius: 0.5, model: 'leaf' },
 };
 
@@ -25,15 +24,15 @@ export class Resources {
     this.spawnTimer = 0;
     this.t = 0;
 
-    // 视野外生成环与销毁半径（都基于视野距离，运行时由 CFG.viewDist 实时决定）
-    this.viewDist = CFG.viewDist;
+    // 视野外生成环与销毁半径（都基于视野距离，运行时由 PLAY.viewDist 实时决定）
+    this.viewDist = PLAY.viewDist;
     this.current = new THREE.Vector3(0.6, 0, 0.4).normalize(); // 全局洋流方向（漂浮物大致同向）
     this.center = new THREE.Vector3(0, 0, 0); // 资源生成中心（随玩家/木筏移动）
     this.prevCenter = new THREE.Vector3();
     this.playerVel = new THREE.Vector3(); // 玩家（木筏）相对移动速度
 
     // 开局：在木筏附近生成一批漂浮物，便于立即收集
-    for (let i = 0; i < CFG.startCount; i++) this.spawn({ near: true });
+    for (let i = 0; i < FLOAT.startCount; i++) this.spawn({ near: true });
   }
 
   spawn(opts = {}) {
@@ -62,15 +61,15 @@ export class Resources {
     const bsize = new THREE.Vector3();
     bbox.getSize(bsize);
     const baseHalfX = bsize.x / 2, baseHalfZ = bsize.z / 2;
-    const sc = CFG.floatScale[type];
+    const sc = FLOAT.scale[type];
     mesh.scale.setScalar(sc); // 漂浮物大小（按类型单独可调）
 
     // 生成位置：调试/开局时在木筏附近随机生成（便于观察与开局即有资源），
     // 否则在视野外的上游环生成（物品从前方迎面漂来）
     let spawnAng, dist;
-    if (CFG.Debug || opts.near) {
+    if (DEBUG.enabled || opts.near) {
       spawnAng = Math.random() * Math.PI * 2; // 木筏四周任意方向
-      dist = CFG.startSpawnMin + Math.random() * (CFG.startSpawnMax - CFG.startSpawnMin);
+      dist = FLOAT.startSpawnMin + Math.random() * (FLOAT.startSpawnMax - FLOAT.startSpawnMin);
     } else {
       // 生成方向：移动时取玩家前方 ±90°（迎面漂来）；静止时四周随机，保持环境始终充实
       if (this.playerVel.lengthSq() > 0.04) {
@@ -79,7 +78,7 @@ export class Resources {
       } else {
         spawnAng = Math.random() * Math.PI * 2; // 静止时四周都生成
       }
-      const vd = CFG.viewDist;
+      const vd = PLAY.viewDist;
       const spawnMin = vd + 4, spawnMax = vd + 22; // 视野外生成环（实时跟随视野）
       dist = spawnMin + Math.random() * (spawnMax - spawnMin);
     }
@@ -94,7 +93,7 @@ export class Resources {
     mesh.position.set(px, 0, pz);
 
     // 每个漂浮物沿同一洋流方向、速度相近，仅叠加小幅随机扰动
-    const speed = CFG.floatSpeedMin + Math.random() * (CFG.floatSpeedMax - CFG.floatSpeedMin);
+    const speed = FLOAT.speedMin + Math.random() * (FLOAT.speedMax - FLOAT.speedMin);
     const drift = this.current.clone().multiplyScalar(speed)
       .add(new THREE.Vector3((Math.random() - 0.5) * 0.4, 0, (Math.random() - 0.5) * 0.4));
 
@@ -233,8 +232,8 @@ export class Resources {
     const toRemove = [];
     for (const it of this.items) {
       // 运行时同步缩放（调试面板调大小实时生效）
-      it.mesh.scale.setScalar(CFG.floatScale[it.type]);
-      const sc = CFG.floatScale[it.type];
+      it.mesh.scale.setScalar(FLOAT.scale[it.type]);
+      const sc = FLOAT.scale[it.type];
       it.halfX = it.baseHalfX * sc;
       it.halfZ = it.baseHalfZ * sc;
 
@@ -246,7 +245,7 @@ export class Resources {
       }
 
       // 调试模式：漂浮物不移动（不平移、不碰撞、不自旋），仅保持贴在水面上
-      if (!CFG.Debug) {
+      if (!DEBUG.enabled) {
         // —— 水上移动：漂移 + 缓慢随机游走 ——
         const wander = new THREE.Vector3(
           Math.sin(t * 0.3 + it.wanderPhase),
@@ -284,15 +283,15 @@ export class Resources {
 
       // 漂出视野范围则销毁（实时跟随视野）
       const d = Math.hypot(wx - playerPos.x, wz - playerPos.z);
-      if (d > CFG.viewDist + 35) toRemove.push(it);
+      if (d > PLAY.viewDist + 35) toRemove.push(it);
     }
     for (const it of toRemove) this._despawn(it);
 
     // 维持场上资源数量（漂出视野会销毁，这里持续补充），让游玩中感觉源源不断
     this.spawnTimer += dt;
-    if (this.spawnTimer >= CFG.spawnInterval) {
+    if (this.spawnTimer >= FLOAT.spawnInterval) {
       this.spawnTimer = 0;
-      if (this.items.length < CFG.maxItems) this.spawn();
+      if (this.items.length < FLOAT.maxItems) this.spawn();
     }
   }
 
@@ -304,9 +303,9 @@ export class Resources {
     this.items.splice(idx, 1);
   }
 
-  // 调试开关切换时调用：清空现有漂浮物并按当前 CFG.Debug 重新布置（近处/远处）
+  // 调试开关切换时调用：清空现有漂浮物并按当前 DEBUG.enabled 重新布置（近处/远处）
   resetForDebug() {
     for (const it of this.items.slice()) this._despawn(it);
-    for (let i = 0; i < CFG.startCount; i++) this.spawn();
+    for (let i = 0; i < FLOAT.startCount; i++) this.spawn();
   }
 }

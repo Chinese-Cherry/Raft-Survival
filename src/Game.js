@@ -7,7 +7,7 @@ import { Player } from './Player.js';
 import { Resources, TYPES } from './Resources.js';
 import { UI } from './UI.js';
 import { ITEMS } from './Items.js';
-import { CFG, START_ITEMS, START_EQUIPPED } from './let.js';
+import { PLAY, FLOAT, VITALS, FOOD, START_ITEMS, START_EQUIPPED } from './let.js';
 import { buildPlayerModel } from '../models/player/player.js';
 import { AudioManager } from './Audio.js';
 
@@ -27,7 +27,7 @@ export class Game {
 
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x9ecbe8);
-    this.viewDist = CFG.viewDist; // 视野距离上限（调试可调）
+    this.viewDist = PLAY.viewDist; // 视野距离上限（调试可调）
     this.edgeRadius = this.viewDist * 0.8; // 接近此半径即把世界拉回中心（浮动原点）
     this.scene.fog = new THREE.Fog(0x9ecbe8, this.viewDist * 0.5, this.viewDist);
 
@@ -62,6 +62,9 @@ export class Game {
     this.paused = false;
     this.everStarted = false; // 是否已通过点击遮罩真正进入游戏（用于 Esc 暂停判断）
     this._heldId = undefined; // 当前右手展示的物品 id（变化时才重建模型）
+    // 生存状态：饱食度 / 水分。只随时间消耗，耗尽后暂时没有任何惩罚/效果。
+    // 满值与消耗速度统一放在 let.js 的 VITALS 中配置。
+    this.vitals = { hunger: VITALS.max, thirst: VITALS.max };
     this.ui = new UI(this.inventory, this.crafting, this);
 
     this._setupBuildGhost();
@@ -314,7 +317,8 @@ export class Game {
         return;
       }
       this.inventory.consume(sel.id, 1);
-      this._flash(`吃掉了 ${def.name}`, 1.2);
+      const gain = this._applyFoodEffect(sel.id); // 按 let.js 的 FOOD 恢复饱食度 / 水分
+      this._flash(`吃掉了 ${def.name}${gain}`, 1.4);
       this.ui.refreshCounts();
       return;
     }
@@ -323,6 +327,25 @@ export class Game {
     // 渔网已改为木筏建筑，不再作为即时道具使用；此处保留以兼容其它瞬时道具。
     switch (this.equipped) {
     }
+  }
+
+  // 食用效果：按 let.js 里 FOOD[id] 的 hunger / thirst 恢复生存状态，
+  // 上限为 VITALS.max，并立即刷新左下角进度条。
+  // 返回提示用的文字（例如「　饱食 +18　水分 +8」），没恢复任何数值时返回空串。
+  _applyFoodEffect(id) {
+    const f = FOOD[id];
+    if (!f) return '';
+    const v = this.vitals;
+    const h0 = v.hunger, t0 = v.thirst;
+    v.hunger = Math.min(VITALS.max, v.hunger + (f.hunger || 0));
+    v.thirst = Math.min(VITALS.max, v.thirst + (f.thirst || 0));
+    this.ui.setVitals(v.hunger, v.thirst);
+    let text = '';
+    const dh = Math.round(v.hunger - h0);
+    const dt = Math.round(v.thirst - t0);
+    if (dh > 0) text += `　饱食 +${dh}`;
+    if (dt > 0) text += `　水分 +${dt}`;
+    return text;
   }
 
   // 左键按下：建造模式（幽灵格已出现）——建造；鱼竿/钩锁——蓄力抛出；其它道具——立即使用
@@ -413,7 +436,7 @@ export class Game {
     if (this.hook && this.hook.active) return;
     this.playerModel?.playUse();
     const dir = this.camera.getWorldDirection(new THREE.Vector3()).normalize(); // 含玩家垂直朝向
-    const speed = (16 + charge * 18) * CFG.hookForce; // 蓄力越久抛得越远；hookForce 等比缩放总力度
+    const speed = (16 + charge * 18) * PLAY.hookForce; // 蓄力越久抛得越远；hookForce 等比缩放总力度
     const hand = this.playerModel.getHandWorld('right', new THREE.Vector3(), !this.thirdPerson);
     this.hook = {
       active: true,
@@ -608,13 +631,13 @@ export class Game {
     this._flash('已取消调整船帆航向', 1.5);
   }
 
-  // —— 保底机制：离木筏超过 CFG.rescueRange 时，按 Esc 可选择传送回木筏 ——
+  // —— 保底机制：离木筏超过 PLAY.rescueRange 时，按 Esc 可选择传送回木筏 ——
   raftDistance() {
     return this.raft.distanceTo(this.player.pos.x, this.player.pos.z);
   }
 
   isFarFromRaft() {
-    return this.raftDistance() > CFG.rescueRange;
+    return this.raftDistance() > PLAY.rescueRange;
   }
 
   // Esc（无面板/无建造/未在定航向时）：距离过远才弹出传送确认
@@ -968,12 +991,12 @@ export class Game {
 
   // 渔网逻辑：
   //  1) 碰到漂浮物即吸入，立刻变成对应物品存进该网自己的储物格（储物格满则留在水面上）；
-  //  2) 每隔 CFG.netAutoItemInterval 秒自动产出一件随机的「漂浮物对应物品」存进储物格。
+  //  2) 每隔 PLAY.netAutoItemInterval 秒自动产出一件随机的「漂浮物对应物品」存进储物格。
   _updateNets(dt) {
     if (this.placedNets.length === 0) return;
-    const R = CFG.netContactRadius ?? 1.2;
+    const R = PLAY.netContactRadius ?? 1.2;
     const R2 = R * R;
-    const step = Math.max(0.2, CFG.netAutoItemInterval ?? 3);
+    const step = Math.max(0.2, PLAY.netAutoItemInterval ?? 3);
     const pool = Object.keys(TYPES); // 可漂浮的资源种类（塑料/木材/水果/树叶…）
     let changed = false;
     for (const net of this.placedNets) {
@@ -1054,7 +1077,7 @@ export class Game {
           new THREE.MeshStandardMaterial({ color: def ? def.color : 0xcccccc })
         );
       }
-      const sc = (CFG.floatScale?.[id] ?? 1) * 0.85;
+      const sc = (FLOAT.scale?.[id] ?? 1) * 0.85;
       m.scale.setScalar(sc);
 
       // 在空心圆内随机找一个不和已有模型挤在一起的位置
@@ -1145,6 +1168,15 @@ export class Game {
     return owner(hit.object);
   }
 
+  // 生存状态消耗：饱食度 / 水分每帧按 let.js 里 VITALS 配置的速度下降。
+  // 扣到 0 就停在 0 —— 按当前需求暂不触发任何负面效果（后续再接掉血/减速等）。
+  _updateVitals(dt) {
+    const v = this.vitals;
+    v.hunger = Math.max(0, v.hunger - VITALS.hungerDrain * dt);
+    v.thirst = Math.max(0, v.thirst - VITALS.thirstDrain * dt);
+    this.ui.setVitals(v.hunger, v.thirst);
+  }
+
   _resize() {
     const w = window.innerWidth, h = window.innerHeight;
     this.renderer.setSize(w, h);
@@ -1174,6 +1206,7 @@ export class Game {
     const frozen = this.ui.openPanel !== null;
     this.player.update(dt, this.ocean, t, frozen);
     this.resources.update(dt, this.player.pos, t);
+    this._updateVitals(dt); // 饱食度 / 水分随时间下降，并刷新左下角进度条
 
     // 玩家可见模型：跟随玩家（脚底对齐），朝向 = yaw
     const p = this.player;

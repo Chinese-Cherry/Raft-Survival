@@ -1,6 +1,9 @@
 import { ITEMS } from "./Items.js";
 import { HOTBAR_SIZE, PACK_SIZE } from "./Inventory.js";
 
+// 饱食度/水分低于该百分比时，进度条在红色与本身颜色之间匀速来回切换
+const VITAL_LOW = 20;
+
 // HUD/UI 管理：底部快捷栏（9格）、背包面板（4x4 固定格子）、交互提示、合成面板、指针锁定遮罩。
 export class UI {
   constructor(inventory, crafting, game) {
@@ -30,6 +33,12 @@ export class UI {
     this.elEquipped = document.getElementById("equipped");
     this.elCharge = document.getElementById("charge");
     this.elChargeFill = this.elCharge.querySelector("i");
+    // 左下角生存状态条（饱食度 / 水分）：只显示条与名称，不显示数字
+    this.elHungerRow = document.getElementById("vital-hunger");
+    this.elHungerBar = this.elHungerRow.querySelector(".vbar > i");
+    this.elThirstRow = document.getElementById("vital-thirst");
+    this.elThirstBar = this.elThirstRow.querySelector(".vbar > i");
+    this._vitalsShown = { hunger: -1, thirst: -1 }; // 已显示的值，用于避免每帧重排
     this.elOverlay = document.getElementById("overlay");
     this.elApp = document.getElementById("app");
 
@@ -299,6 +308,24 @@ export class UI {
     if (p == null) { this.elCharge.style.display = "none"; return; }
     this.elCharge.style.display = "block";
     this.elChargeFill.style.width = Math.max(0, Math.min(100, p * 100)) + "%";
+  }
+
+  // 左下角生存状态：饱食度 / 水分，取值 0~100。
+  // 只在取整后的数值发生变化时写 DOM，避免每帧触发重排。
+  // 低于 VITAL_LOW 百分比时给该行加 low 类，由 CSS 让进度条在红/本色之间匀速来回切换。
+  setVitals(hunger, thirst) {
+    const h = Math.round(Math.max(0, Math.min(100, hunger)));
+    const t = Math.round(Math.max(0, Math.min(100, thirst)));
+    if (h !== this._vitalsShown.hunger) {
+      this._vitalsShown.hunger = h;
+      this.elHungerBar.style.width = h + "%";
+      this.elHungerRow.classList.toggle("low", h < VITAL_LOW);
+    }
+    if (t !== this._vitalsShown.thirst) {
+      this._vitalsShown.thirst = t;
+      this.elThirstBar.style.width = t + "%";
+      this.elThirstRow.classList.toggle("low", t < VITAL_LOW);
+    }
   }
 
   // 打开/切换面板。若已有另一面板打开则禁止打开（互斥）；

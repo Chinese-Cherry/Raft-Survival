@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { CFG } from './let.js';
+import { RAFT, DEBUG } from './let.js';
 
 const TILE = 2; // 单个木筏格子的世界尺寸
 const TWO_PI = Math.PI * 2;
@@ -39,8 +39,8 @@ export class Raft {
     this.delta = new THREE.Vector3(0, 0, 0); // 本帧木筏位移，供玩家同步
     this.velocity = new THREE.Vector3();      // 本帧实际速度（update 中计算）
     this.currentDir = new THREE.Vector3(0.6, 0, 0.4).normalize(); // 洋流方向（= 漂浮物方向）
-    this.driftSpeed = CFG.raftDriftSpeed;  // 无帆/收帆：随洋流漂移，略快于漂浮物(1~2)
-    this.sailSpeed = CFG.raftSailSpeed;     // 扬帆：按船帆固定航向航行
+    this.driftSpeed = RAFT.driftSpeed;  // 无帆/收帆：随洋流漂移，略快于漂浮物(1~2)
+    this.sailSpeed = RAFT.sailSpeed;     // 扬帆：按船帆固定航向航行
     this.hasSail = false;
     this.sailMesh = null;
     this.sailCloth = null;                  // 帆布（收帆时隐藏）
@@ -224,9 +224,9 @@ export class Raft {
     return dirFromYaw(this.sailYaw);
   }
 
-  // 缓慢转向：每帧最多转 CFG.sailTurnSpeed * dt 弧度，避免航向瞬变导致速度突变
+  // 缓慢转向：每帧最多转 RAFT.sailTurnSpeed * dt 弧度，避免航向瞬变导致速度突变
   turnToYaw(targetYaw, dt) {
-    const maxStep = Math.max(0, CFG.sailTurnSpeed) * dt;
+    const maxStep = Math.max(0, RAFT.sailTurnSpeed) * dt;
     const diff = shortestAngle(this.sailHeading, targetYaw);
     this.sailHeading = normalizeAngle(this.sailHeading + Math.max(-maxStep, Math.min(maxStep, diff)));
   }
@@ -301,14 +301,14 @@ export class Raft {
     if (dt === undefined) dt = 0;
     // 本帧航行/漂移方向：船帆朝向也使用它（必须在分支外声明，供后面引用）
     let dir = this.currentDir;
-    if (CFG.Debug) {
+    if (DEBUG.enabled) {
       // 调试模式：木筏不漂移，仅随海面起伏（站在筏上的玩家也不被带走）
       this.velocity.set(0, 0, 0);
       this.delta.set(0, 0, 0);
     } else {
       // 速度：扬帆后沿船帆固定航向航行，航速从漂移速度缓慢爬升到峰值；
       // 无帆/收帆时帆力逐渐回落，最终恢复洋流漂移速度。
-      const ramp = Math.max(0.01, CFG.sailRampTime); // 爬升到峰值所需时间（秒）
+      const ramp = Math.max(0.01, RAFT.sailRampTime); // 爬升到峰值所需时间（秒）
       const driftYaw = Math.atan2(-this.currentDir.x, -this.currentDir.z);
       if (this.hasSail && this.sailOpen) {
         // 扬帆：航向缓慢转向船帆设定方向，速度缓慢爬升
@@ -321,9 +321,9 @@ export class Raft {
         this.turnToYaw(driftYaw, dt);
         dir = this.hasSail ? dirFromYaw(this.sailHeading) : this.currentDir;
       }
-      // 速度参数每帧从 CFG 读取（改 let.js 里的 raftDriftSpeed / raftSailSpeed 即时生效）
-      this.driftSpeed = CFG.raftDriftSpeed;
-      this.sailSpeed = CFG.raftSailSpeed;   // 船帆速度上限（峰值航速）
+      // 速度参数每帧从 let.js 的 RAFT 读取（改 driftSpeed / sailSpeed 即时生效）
+      this.driftSpeed = RAFT.driftSpeed;
+      this.sailSpeed = RAFT.sailSpeed;   // 船帆速度上限（峰值航速）
       const speed = Math.min(
         this.sailSpeed,
         this.driftSpeed + (this.sailSpeed - this.driftSpeed) * this.sailPower
